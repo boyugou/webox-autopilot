@@ -25,7 +25,7 @@ Returns `{ code: 1, data: { ... } }` containing:
 
 | Field | Shape | Notes |
 |---|---|---|
-| `lunchSpecials` | array (~2000) | Per-slot inventory for Lunch. `{id (productSpecialId), productId, price, regularPrice, stockStatus, portionId, cutoffTime, shippingTimeSectionId, kitchenId}` |
+| `lunchSpecials` | array (~2000) | Per-slot inventory for Lunch. Actual fields: `{id (=productSpecialId), productId, price, regularPrice, stockStatus, stockQuantity, kitchenId, dateShipping, timeShipping, pickupWindowId, ...}`. NOTE: `portionId`, `cutoffTime`, and `shippingTimeSectionId` are NOT on these entries — see Place Order section for where each really comes from. |
 | `dinnerSpecials` | array (~1300) | Same shape, Dinner |
 | `happyHourSpecials` | array | Same shape, HappyHour |
 | `products` | array (~2400) | Catalog: `{id, brandId, category, extName: {enUs}, averageRating, salesCnt, glutenFree, dairyFree, halalCertified, nutFree, spicyLevel, veggieLevel, ...}` |
