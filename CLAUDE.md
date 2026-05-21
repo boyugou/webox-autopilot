@@ -10,10 +10,11 @@ This file is for **two audiences**:
 
 ### What this repo is
 
-A set of five Claude Code skills that autonomously order food from [WeBox](https://webox.com) using the user's logged-in Chrome browser:
+A set of six Claude Code skills that autonomously order food from [WeBox](https://webox.com) using the user's logged-in Chrome browser:
 
 - **`webox-onboard`** — first-time setup (run this first)
-- **`webox-order`** — order meals autonomously
+- **`webox-order`** — order meals (favorites-first, with category fallback)
+- **`webox-order-all`** — order meals using the FULL menu (skip favorites, scrape all categories)
 - **`webox-calendar`** — view and sync the order calendar
 - **`webox-sync-favorites`** — refresh the favorites cache
 - **`webox-reset`** — wipe local data and re-onboard

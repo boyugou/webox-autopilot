@@ -34,7 +34,7 @@ Claude Code reads `CLAUDE.md` in the repo and follows the install steps automati
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Either option installs five skills: `webox-onboard`, `webox-order`, `webox-calendar`, `webox-sync-favorites`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
+Either option installs six skills: `webox-onboard`, `webox-order`, `webox-order-all`, `webox-calendar`, `webox-sync-favorites`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
 
 ## Requirements
 
@@ -50,7 +50,8 @@ Either option installs five skills: `webox-onboard`, `webox-order`, `webox-calen
 | Skill | Trigger | Purpose |
 |-------|---------|---------|
 | `webox-onboard` | `/webox-onboard` or "set up WeBox" | First-time setup: preferences, favorites, history. Also handles skill updates. **Run this first.** |
-| `webox-order` | "Order my lunch for tomorrow" | Full ordering flow — scrape, select, cart, checkout |
+| `webox-order` | "Order my lunch for tomorrow" | Favorites-first ordering (default). Scrape favorites, fall back to categories if needed, cart, checkout |
+| `webox-order-all` | "Order something new" / "browse the menu" / "ignore my favorites" | Full-menu ordering — skip favorites, scrape across all categories. Use when exploring or when favorites page is blocked |
 | `webox-calendar` | "Show my WeBox calendar" / "Sync my orders" | View this week + next week, sync from WeBox |
 | `webox-sync-favorites` | "Refresh my favorites" | Re-scrape favorites page, diff against cache |
 | `webox-reset` | "Reset WeBox" / "Start over" | Wipe all local data in ~/Documents/WeBox/ and re-onboard |

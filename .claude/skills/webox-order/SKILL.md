@@ -1,6 +1,17 @@
 ---
 name: webox-order
-description: Autonomously order food from WeBox (webox.com) using the user's logged-in Chrome session. Scrapes menus, checks existing orders, selects items within budget based on user preferences, adds to cart, and checks out. Use when the user asks to order food on WeBox for specific dates/meals.
+description: Order food from WeBox using ONLY the user's favorites for each meal slot. Strict favorites-only — does not scrape categories. Use for normal day-to-day ordering ("order my lunch for tomorrow"), repeat usual picks, or when the user wants to stick to known dishes. For exploring the full menu, use webox-order-all instead.
+---
+
+## Scope: Favorites-Only (strict)
+
+This skill scrapes ONLY the user's WeBox favorites for each meal slot and plans the order from that scrape. It does **not** scrape any cuisine categories — even if favorites is empty or limited.
+
+If favorites can't fulfill the slot (empty page, all sold out, insufficient items to reach a reasonable budget), **ask the user** before falling back:
+> Your favorites page is empty / limited for [date]. Want me to switch to `/webox-order-all` and scrape the full menu instead?
+
+Sister skill: **`webox-order-all`** scrapes the full menu (all categories). Both share identical selection, budget, cart, and checkout logic — they only differ in what they scrape.
+
 ---
 
 # WeBox Order Skill
@@ -128,11 +139,13 @@ Skip any target date+meal already in the history.
 
 ### URL Reference
 
-**Favorites (primary):**
+**Favorites (primary) — date-bound:**
 ```
 https://www.webox.com/menu/section/My%20Favorites?date=YYYY-MM-DD&shippingTime=Lunch
 ```
-Replace `Lunch` with `Dinner` for dinner. Favorites list is the same for both shippingTimes — scrape once per date.
+Replace `Lunch` with `Dinner` for dinner. Favorites list is the same for both shippingTimes on the same date — scrape once per date.
+
+⚠️ **Favorites are date-bound:** this URL returns only hearted items that are *available on this specific date*. It is NOT the user's complete hearted list. If you need the full picture, scrape multiple upcoming dates and union the results.
 
 **Full menu:**
 ```
@@ -143,6 +156,8 @@ https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch
 ```
 https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=CATEGORY&objName=CATEGORY
 ```
+
+⚠️ **CRITICAL — DO NOT use `/menu/section/CATEGORY` for non-favorites.** That URL pattern only works for `My%20Favorites`. For Chinese, Japanese, Drink, etc., `/menu/section/X` **silently falls back to your favorites list and returns wrong data while looking like it worked.** If you scrape "Chinese" and the result is identical to your favorites, this is the bug. Always use the query-param URL above for categories.
 
 **All categories** (use these exact URL values):
 
@@ -236,44 +251,38 @@ Then for each tab:
 
 Practical limit: 3–5 concurrent tabs. Cuts total scraping time roughly N×.
 
-### What to Scrape — Decision Tree
+### What to Scrape — Strict Favorites Only
 
-1. **Menu cache hit?** Check `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json` first. If it exists and is < 60 minutes old, use it — no scraping needed. This makes **replan** instant: after ordering, if the user says "actually I don't like that, replan with something else", you have the full menu already cached.
+1. **Menu cache hit?** Check `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json` first. If it exists and is < 60 minutes old AND its `sources` includes `"favorites"`, use it — no scraping needed.
 
-2. **Favorites first** (use favorites-cache if fresh; scrape if stale). Covers all meal slots for that date.
+2. **Scrape the favorites page** for the target date (parallel tabs if multiple dates needed). Use the favorites URL above. Remember: favorites are date-bound.
 
-3. **If favorites returns 0 items** (or insufficient given budget): fall back to category pages.
-   - Use `category_mode` + `category_list` to pick which categories.
-   - Always include `preferred_cuisines`.
-   - Skip anything in `cuisines_to_avoid`.
+3. **If favorites returns 0 items or is clearly insufficient** for the budget, STOP and ask the user:
+   > Your favorites page is empty/limited for [date]. Want me to switch to `/webox-order-all` (scrape the full menu) instead?
+   Do NOT silently fall back to categories — this skill is favorites-only by contract.
 
-4. **If user prompt requests specific cuisine** ("I want Thai today"): the cuisine constraint applies to the **main dish only**. Fillers (drinks, sides, fruit, eggs, milk) come from any category and are used to fill the budget.
-   - Scrape the requested cuisine for the main.
-   - Also scrape filler-eligible categories (Drink, Side, Snack, Dairy & Eggs, Produce) for budget-filling.
-   - Don't restrict fillers to match the main's cuisine — Chinese tea + Thai curry + general fruit is a fine plan.
+4. **If the user prompt requests a specific cuisine** ("I want Thai today") and favorites doesn't have it, STOP and ask the user the same question. Don't substitute outside favorites without permission.
 
-5. **After scraping (any mode)**: **deduplicate** by `(brand, name)` key — the same dish can appear in multiple categories (e.g., a Chinese snack shows in both `Chinese` and `Snack`). Keep one copy per (brand, name), but record all source categories in the cached item's `categories` array.
-
-6. **Cache the result** to `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
+5. **Cache the result** to `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
    ```json
    {
      "cached_at": "2026-05-20T21:30:00",
      "date": "2026-05-21",
      "meal": "Lunch",
-     "sources": ["favorites", "Chinese", "Drink"],
+     "sources": ["favorites"],
      "items": [
-       {"brand": "...", "name": "...", "price": 17.45, "rating": 4.5, "categories": ["favorites", "Chinese"]}
+       {"brand": "...", "name": "...", "price": 17.45, "rating": 4.5, "categories": ["favorites"]}
      ]
    }
    ```
-   `categories` records which sources surfaced the item (for debugging / explanation). The menu-cache directory should be created if it doesn't exist.
 
 ### Menu Cache Hygiene
 
 - TTL: 60 minutes (menus can change as items sell out)
-- Auto-prune: when loading, drop cache files older than 24 hours
+- Auto-prune cache files older than 24 hours when loading
 - The cache is per-slot; multiple cached slots can coexist
 - If the user explicitly says "re-scrape" or "refresh menu", ignore the cache and re-fetch
+- A cache written by `webox-order-all` has `sources: ["Chinese", "Japanese", ...]` — `webox-order` should treat it as compatible only if `"favorites"` is in `sources`, otherwise re-scrape favorites
 
 ---
 
@@ -729,3 +738,5 @@ Practical concurrency: 3–5 tabs at a time is safe; beyond that the browser may
 | Empty favorites for date | Fall back to category pages (respect category_mode) |
 | Cache file malformed | Treat as missing, re-scrape |
 | New user, no order history | Continue with empty variety state |
+| Favorites page blocked / rate-limited | Hand off to `webox-order-all` (or fall back to cached menu if fresh) |
+| Multiple scrapes failing in a row | Wait 60s, retry once; if still failing, ask user to wait and try again |
