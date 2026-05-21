@@ -45,7 +45,16 @@ For each `(date, meal)` the user wants:
 ### 2a. Menu cache check
 Read `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`. If `cached_at < 60 minutes ago`, reuse it.
 
-### 2b. Fresh fetch via API (~1s per slot)
+### 2b. Fresh fetch via API + download-bypass write (~1s per slot)
+
+The menu for a slot is ~1500 items × ~250 bytes = ~400KB. Returning it through `javascript_tool` would truncate at ~1000 chars. Two paths:
+
+- **Download-bypass (fast — preferred):** JS builds the full menu JSON, triggers a Blob download via `<a download>` click. File lands in `~/Downloads`, Bash moves it to `~/Documents/WeBox/menu-cache/`. ONE round trip per slot.
+- **Chunked fallback (slow but always works):** JS stashes items on `window.__weboxMenu`, agent retrieves in chunks of 5. ~300 round trips per slot.
+
+The download-bypass requires Chrome's "automatic downloads" permission for webox.com (one-time grant — see "First-run permission" below). If the bypass fails, fall back to chunked automatically.
+
+#### 2b-i — JS: fetch + filter + trigger download
 
 ```javascript
 (async () => {
@@ -69,10 +78,7 @@ Read `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`. If `cached_at < 60 minut
       const p = productById.get(s.productId);
       if (!p || hideIds.has(p.id)) return null;
       kitchenId = kitchenId || s.kitchenId;
-      // Resolve default portion (most products have one; bowls/bento may have small/regular/large)
       const portion = (p.extPortions || []).find(x => x.isDefault) || (p.extPortions || [])[0];
-      // Field order matters for human readability when opening the JSON in Finder:
-      // readable fields first, opaque IDs last (they're for Place Order body assembly).
       return {
         name:  p.extName?.enUs,
         brand: brandById.get(p.brandId)?.extName?.enUs,
@@ -84,38 +90,83 @@ Read `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`. If `cached_at < 60 minut
           glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
           nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
         },
-        // Stock — 0 means UNLIMITED (item not tracked); >0 means finite remaining.
-        // At plan time, never request more than (stockQuantity || Infinity).
         stockQuantity: s.stockQuantity,
-        // IDs needed only for Place Order body (Step 6) — agent plans against name/brand/etc above
         productId: p.id,
         productSpecialId: s.id,
-        portionId: portion?.id || null,                      // from product.extPortions (isDefault preferred)
-        portionCount: (p.extPortions || []).length            // >1 = user-facing portion choice exists
+        portionId: portion?.id || null,
+        portionCount: (p.extPortions || []).length
       };
     })
     .filter(Boolean);
-  return JSON.stringify({ date, meal, kitchenId, items });
+  // Build the final cache file
+  const cache = { cached_at: new Date().toISOString(), date, meal, kitchenId, items };
+  const json = JSON.stringify(cache, null, 2);
+  // Stash for fallback retrieval
+  window.__weboxMenu = items;
+  window.__weboxMenuCache = cache;
+  // Trigger download
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `webox-menu-${date}-${meal}-${Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  return JSON.stringify({ downloadedAs: a.download, bytes: json.length, itemCount: items.length, kitchenId });
 })()
 ```
+
+#### 2b-ii — Bash: wait, verify, move
+
+```bash
+sleep 1.5
+F="$HOME/Downloads/<filename from JS return>"
+if [ -f "$F" ]; then
+  mkdir -p ~/Documents/WeBox/menu-cache
+  mv "$F" ~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json
+  python3 -c "import json; d=json.load(open('$HOME/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json')); print('✓ menu-cache written:', len(d['items']), 'items')"
+else
+  echo "Download didn't land — falling back to chunked retrieval"
+  # See 2b-fallback below
+fi
+```
+
+#### 2b-fallback — Chunked retrieval (when download bypass fails)
+
+If the file didn't appear in `~/Downloads`:
+1. The user hasn't granted Chrome's "automatic downloads" permission for webox.com — see "First-run permission" below
+2. Or the page lost focus / was reloaded mid-call
+
+Items are already stashed on `window.__weboxMenu` by the JS above. Loop:
+```javascript
+(async (offset) => {
+  const items = window.__weboxMenu || [];
+  const chunk = items.slice(offset, offset + 5);
+  return JSON.stringify({ offset, total: items.length, done: offset + chunk.length >= items.length, items: chunk });
+})(/* offset */)
+```
+
+Then write the assembled file with the Write tool, using the metadata from `window.__weboxMenuCache` (`cached_at`, `date`, `meal`, `kitchenId`).
+
+#### First-run permission (one-time setup)
+
+Chrome silently blocks subsequent programmatic downloads from an origin unless the user grants "Allow multiple automatic downloads". To enable:
+
+1. Open Chrome: `chrome://settings/content/automaticDownloads`
+2. Under "Allowed to automatically download multiple files", click "Add"
+3. Enter `[*.]webox.com` and save
+
+After this, all download-bypass calls work freely. Without it, the skill falls back to chunked retrieval (slower but functional).
+
+#### Final notes
 
 **What the agent plans against:** each cached item has name, brand, price, category, rating, in_favorites, dietary flags — all the fields needed for selection. The IDs (`productId`, `productSpecialId`, `portionId`) are metadata at the END of each entry; the agent doesn't read them during planning, only when assembling the Place Order body in Step 6.
 
 **`shippingTimeSectionId` is NOT in the menu cache** — it's per-meal (constant within a kitchen), stored once in `shipping-windows.json` by webox-onboard / webox-sync, not duplicated per item.
 
-Write the result to `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`:
-```json
-{
-  "cached_at": "ISO-8601",
-  "date": "2026-05-22",
-  "meal": "Lunch",
-  "kitchenId": 12838,
-  "shippingTimeSectionId": 27274,
-  "items": [ ... ]
-}
-```
-
-**Hidden items and sold-out items are pre-filtered.** The cache is clean and ready for planning.
+**Hidden items and sold-out items are pre-filtered** in 2b-i. The cache is clean and ready for planning.
 
 If `j.code !== 1` or items is empty: cutoff has likely passed. Tell the user; suggest picking a later slot.
 

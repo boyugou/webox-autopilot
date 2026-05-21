@@ -292,14 +292,28 @@ For each active order, group by `isoWeek(dateShipping)` and write to `~/Document
 
 ## Step 6: Fetch Menu + Enrich Favorites/Hidden + Build Warm Cache
 
-This step enriches favorites + hidden ID lists into human-readable `{id, name, brand, category}` objects using the menu API's `products` array as a lookup. **Run the three JS snippets below in order — they are designed to keep each tool-result under the safe display limit.**
+This step enriches favorites + hidden ID lists into human-readable `{id, name, brand, category}` objects using the menu API's `products` array as a lookup.
 
-> **About `javascript_tool` return values:**
-> Tool-result truncation is REAL — at ~1000 characters / ~50 lines, your displayed AND model-context content is cut. Anything after `[TRUNCATED]` is lost (empirically verified — a 7438-byte single-string return arrives with only ~870 chars and the end marker missing). The chunked pattern below is mandatory for any payload that might exceed this limit.
+> **Two retrieval paths, fall back if the first fails:**
 >
-> **Never write data to `~/Downloads`** or use blob/URL-download tricks. They don't work.
+> 1. **Download-bypass (fast):** JS builds the file content, triggers a browser download via `<a download>` Blob click. The file lands in `~/Downloads`, Bash moves it to `~/Documents/WeBox/`. One JS call + one Bash call per file.
+> 2. **Chunked retrieval (slow but always works):** if the download didn't land in `~/Downloads` within ~2 seconds, fall back to slicing data off `window.__favPayload` / `window.__hidePayload` in chunks of 5.
+>
+> Tool-result truncation is REAL — at ~1000 characters, the model context (not just display) is cut. Anything after `[TRUNCATED]` is lost. So inline-returning a 10KB favorites payload doesn't work; you NEED one of the two paths above.
+>
+> Download-bypass needs Chrome's "automatic downloads" permission for webox.com (one-time grant — see "First-run permission" below). When granted, every download flows freely. Without it, only the first download per page-load succeeds; subsequent ones silently drop.
 
-### Step 6a — Fetch + enrich + stash, return summary only
+### First-run permission (do this ONCE before anything else)
+
+Tell the user (only the first time onboarding runs):
+
+> Quick one-time setup: open Chrome → `chrome://settings/content/automaticDownloads` → under "Allowed to automatically download multiple files" click **Add**, paste `[*.]webox.com`, save. This lets the skill write data files in one shot instead of streaming them piece-by-piece. Without it, onboarding still works but takes ~3× longer.
+
+Detect whether the permission is granted by trying a download and checking if it lands (Step 6a does this). If the first 6a download succeeds but a follow-up doesn't, you know permission is denied.
+
+### Step 6a — Fetch + enrich + trigger download for favorites.json
+
+This single JS call: fetches the three APIs, enriches IDs → names, builds the full `favorites.json` content, triggers a download, stashes data on `window.*` for fallback. Returns a small summary.
 
 ```javascript
 (async () => {
@@ -330,101 +344,103 @@ This step enriches favorites + hidden ID lists into human-readable `{id, name, b
   const favE  = enrichProducts(favR.data?.productIdList);
   const hideE = enrichProducts(hideR.data?.productIdList);
   const now = new Date().toISOString();
-  // Stash the FULL enriched objects on window for chunked retrieval below.
-  window.__favPayload  = { synced_at: now, products: favE.products,  unresolvedProductIds: favE.unresolved,  brands: enrichBrands(favR.data?.brandIdList) };
-  window.__hidePayload = { synced_at: now, products: hideE.products, unresolvedProductIds: hideE.unresolved, brands: enrichBrands(hideR.data?.brandIdList) };
-  window.__weboxMenuRaw = menuR.data;  // For any optional follow-up
+  // Build complete payloads
+  const favPayload  = { synced_at: now, products: favE.products,  unresolvedProductIds: favE.unresolved,  brands: enrichBrands(favR.data?.brandIdList) };
+  const hidePayload = { synced_at: now, products: hideE.products, unresolvedProductIds: hideE.unresolved, brands: enrichBrands(hideR.data?.brandIdList) };
+  // Stash for fallback chunked retrieval
+  window.__favPayload   = favPayload;
+  window.__hidePayload  = hidePayload;
+  window.__weboxMenuRaw = menuR.data;
+  // Trigger download for favorites.json (the larger of the two)
+  const favJson = JSON.stringify(favPayload, null, 2);
+  const blob = new Blob([favJson], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `webox-favorites-${Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
   return JSON.stringify({
+    downloadedAs: a.download,
+    favBytes: favJson.length,
     favCount: favE.products.length,
     favUnresolved: favE.unresolved.length,
-    favBrandCount: (favR.data?.brandIdList || []).length,
     hideCount: hideE.products.length,
     hideUnresolved: hideE.unresolved.length,
-    hideBrandCount: (hideR.data?.brandIdList || []).length,
     synced_at: now
   });
 })()
 ```
 
-This returns a small summary (~200 bytes). Record `favCount`, `hideCount`, and `synced_at` from the response — you'll use them in Step 6c.
-
-### Step 6b — Pull favorites in chunks of 5 (deterministic, single-line JSON)
-
-> **The tool-result truncation is REAL, not cosmetic.** It is enforced by Claude Code at roughly 50–60 lines of pretty-printed output OR ~1000 characters. Both your visual display AND your model-context will be truncated at this point. You CANNOT trust that data after `[TRUNCATED]` reached you. So chunk-fetch is mandatory for any payload that might exceed this.
->
-> **DO NOT try larger chunks. DO NOT use pretty-printing. DO NOT switch to compact array formats mid-loop.** Follow the EXACT script below.
-
-Loop the EXACT snippet below with `offset = 0, 5, 10, 15, ...` until the returned `done` flag is `true`. The return is FLAT (no pretty-print), 5 items per chunk, capped well under the 1000-char truncation limit:
-
-```javascript
-(async (offset) => {
-  const products = window.__favPayload?.products || [];
-  const chunk = products.slice(offset, offset + 5);
-  // FLAT JSON — no whitespace, no newlines, no nesting indent. Avoids line-count truncation.
-  return JSON.stringify({
-    offset,
-    total: products.length,
-    chunkCount: chunk.length,
-    done: offset + chunk.length >= products.length,
-    products: chunk
-  });
-})(/* paste offset integer, e.g., 0 */)
+**Then Bash — wait, verify, move:**
+```bash
+sleep 1.5
+F="$HOME/Downloads/<downloadedAs from JS>"
+if [ -f "$F" ]; then
+  mv "$F" ~/Documents/WeBox/favorites.json
+  python3 -c "import json; d=json.load(open('$HOME/Documents/WeBox/favorites.json')); print('✓ favorites.json written:', len(d['products']), 'products')"
+else
+  echo "Download didn't land — Chrome permission likely not granted. Falling back to chunked retrieval (see 6a-fallback)."
+fi
 ```
 
-Each chunk is ~600–800 chars on a single line — within the truncation limit regardless of how the terminal renders it.
+### Step 6b — Same pattern for hidden.json
 
-For a ~100-item favorites list that's ~20 round trips. Accumulate the `products` arrays from each chunk into your own state until `done: true`.
+Trigger a separate download (this is the SECOND download — needs Chrome permission to be granted; if not, this will silently drop):
 
-**Sanity check on every chunk:** verify `chunkCount === 5` (or `< 5` only when `done: true`). If a chunk returns fewer items unexpectedly, something is wrong — re-fetch that offset.
+```javascript
+(async () => {
+  const hideJson = JSON.stringify(window.__hidePayload, null, 2);
+  const blob = new Blob([hideJson], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `webox-hidden-${Date.now()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  return JSON.stringify({ downloadedAs: a.download, bytes: hideJson.length, hideCount: window.__hidePayload.products.length });
+})()
+```
 
-### Step 6b-tail — One call for brands + unresolvedProductIds
+Bash recipe identical, target `~/Documents/WeBox/hidden.json`.
 
-After all chunks are done, one final call:
+### Step 6a-fallback / 6b-fallback — Chunked retrieval (when download silently drops)
+
+If the file didn't land in `~/Downloads`, the user hasn't granted Chrome's "automatic downloads" permission and the second+ downloads were silently blocked. Switch to chunked:
+
+```javascript
+// Loop offset = 0, 5, 10, ... until done: true
+(async (offset) => {
+  const products = window.__favPayload?.products || [];  // or __hidePayload
+  const chunk = products.slice(offset, offset + 5);
+  return JSON.stringify({ offset, total: products.length, chunkCount: chunk.length, done: offset + chunk.length >= products.length, products: chunk });
+})(/* offset */)
+```
+
+Then a tail call for `brands` + `unresolvedProductIds`:
 ```javascript
 JSON.stringify({
   synced_at: window.__favPayload.synced_at,
   brands: window.__favPayload.brands,
-  unresolvedProductIds: window.__favPayload.unresolvedProductIds,
-  unresolvedCount: window.__favPayload.unresolvedProductIds.length,
-  brandCount: window.__favPayload.brands.length
+  unresolvedProductIds: window.__favPayload.unresolvedProductIds
 })
 ```
 
-This is small (~brands and unresolved IDs only) — usually fits in one call. If `unresolvedCount > 100`, chunk this too (replace the inline arrays with `slice(offset, offset+30)`).
+Assemble the JSON object in your own state, write with the `Write` tool. Same for hidden.
 
-### Step 6b-write — Write the assembled file
+### Why two paths
 
-Build the final object in your own state:
-```json
-{
-  "synced_at": "<from the tail call above>",
-  "products": [ <concatenation of all chunked products arrays> ],
-  "unresolvedProductIds": [ <from tail call> ],
-  "brands": [ <from tail call> ]
-}
-```
+Empirically verified 2026-05-21:
+- `javascript_tool` return values truncate at ~1000 chars in the model context, not just display. A 7438-byte single string arrives with only ~870 chars and the end-marker lost.
+- Chrome's `<a download>` Blob click DOES write to `~/Downloads` reliably — BUT only the first programmatic download per origin per page-load succeeds, unless "Allow automatic downloads" is explicitly enabled. Subsequent downloads silently drop.
 
-Use the **Write tool** to save it to `~/Documents/WeBox/favorites.json`.
-
-### Step 6c — Same chunked pattern for hidden.json
-
-Identical structure, substitute `__favPayload` → `__hidePayload`:
-
-```javascript
-(async (offset) => {
-  const products = window.__hidePayload?.products || [];
-  const chunk = products.slice(offset, offset + 5);
-  return JSON.stringify({ offset, total: products.length, chunkCount: chunk.length, done: offset + chunk.length >= products.length, products: chunk });
-})(/* paste offset, e.g., 0 */)
-```
-
-Tail call for brands/unresolved (substitute `__favPayload` → `__hidePayload`). Assemble and write `~/Documents/WeBox/hidden.json`.
-
-### Why this is necessary (don't be tempted to skip)
-
-Empirically verified 2026-05-21: a `javascript_tool` returning a 7438-byte single-string payload arrives in the model context truncated at ~870 characters, with the rest lost (verified by missing end-marker). The agent gets ONLY the visible portion — not "the full data with a cosmetic display abbreviation". Earlier guidance in this skill that suggested otherwise was incorrect; it has been removed.
-
-Smaller chunks = no truncation. The fixed 5-items-per-chunk + flat JSON keeps every chunk within limits regardless of product name length.
+So:
+- **Permission granted** (one-time setup) → use the download path. ~2 round trips for favorites + hidden.
+- **Permission not granted** → falls back to chunked. ~40 round trips total. Still works.
 
 ### Verification
 

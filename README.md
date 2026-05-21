@@ -65,6 +65,14 @@ Your WeBox account itself (orders, hearts, hidden list) is untouched — it all 
 - An active WeBox account, logged in to Chrome
 - A direct Anthropic plan (Pro, Max, Team, or Enterprise)
 
+**One-time Chrome setup (recommended — makes onboarding ~3× faster):**
+
+1. Open `chrome://settings/content/automaticDownloads`
+2. Under "Allowed to automatically download multiple files", click **Add**
+3. Paste `[*.]webox.com` and save
+
+This lets the skill write big data files (favorites, hidden, menu cache, order history) to your `~/Downloads` in one shot, where Claude Code's Bash then moves them into `~/Documents/WeBox/`. Without this permission the skill falls back to streaming data in 5-item chunks (~3× slower but functional).
+
 ---
 
 ## Skills
