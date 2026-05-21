@@ -27,7 +27,7 @@ git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot &&
 ## Requirements
 
 - [Claude Code](https://claude.ai/code) (any recent version)
-- Google Chrome with the **[Claude in Chrome](https://claude.ai/docs/claude-code/chrome-extension)** extension
+- Google Chrome with the **[Claude in Chrome](https://code.claude.com/docs/en/chrome)** extension
 - An active WeBox account, logged in to Chrome
 - A direct Anthropic plan (Pro, Max, Team, or Enterprise)
 
@@ -127,6 +127,7 @@ The skill maintains several cache files in `~/.webox-autopilot/` to avoid redund
 | `favorites-cache.md` | 7 days | Cached WeBox favorites list. Re-scraped automatically when stale. Say "refresh my favorites" to force an update. |
 | `order-history-cache.json` | 1 hour | Cached order history. Avoids re-scraping `/order/list/normal` if you run back-to-back sessions. |
 | `plan-cache.md` | `plan_cache_days` | Full record of planned and actual orders. Used for variety tracking (`avoid_repeat_days`) and as a human-readable order log. |
+| `order-calendar.md` | synced daily | Local calendar of all ordered date+meal slots. Primary source for "is this slot taken?" — avoids re-scraping WeBox order history on most sessions. Updated immediately after every checkout. |
 | `items-with-options.md` | permanent | Items that open an options modal, with the option type and chosen value. Grows over time — future sessions pre-select known choices automatically. |
 
 ---
@@ -171,6 +172,48 @@ User prompt
 7. Update plan cache with actual items + order numbers
    Invite post-order feedback → parse → append to item-reviews.md
 ```
+
+## First Session vs. Later Sessions
+
+The first time you use the skill, Claude has no local state and needs to build everything from scratch. Subsequent sessions skip most of the setup and run significantly faster.
+
+### First session (cold start)
+
+| Step | What happens | Why |
+|------|-------------|-----|
+| Prerequisite check | Verify Claude in Chrome is connected and WeBox is logged in | Always runs — fast, catches setup issues early |
+| Onboarding question | Claude asks one open-ended question about diet, budget, and preferences | `user-preferences.md` doesn't exist yet |
+| *(while you type your answer)* Scrape order history | Navigate to `/order/list/normal`, extract all past orders, build initial order calendar | Runs in parallel with onboarding — no cache yet |
+| *(while you type your answer)* Scrape favorites | Navigate to your favorites page, scroll 10× to trigger lazy loading, extract all items | Runs in parallel with onboarding — the slowest step (~60s), but hidden behind your typing time |
+| Parse onboarding reply | Extract preferences from your natural-language answer, write `user-preferences.md` | All caches are already populated by this point |
+| Handle option modals | Every item with required options triggers a modal — handled dynamically | `items-with-options.md` doesn't exist, no prior knowledge |
+| Item selection | Based on preferences file + scraped menu — no ratings data yet | `item-reviews.md` doesn't exist |
+| Variety tracking | No repeat-avoidance history | `plan-cache.md` doesn't exist before this session |
+| Order calendar | Built from scraped history, saved to `order-calendar.md` | First time — populated during onboarding background work |
+| Post-order | Writes plan cache, updates calendar, invites first item ratings | Builds the foundation for future sessions |
+
+**First session total extra time:** ~60s of favorites scraping (mostly hidden while you type the onboarding answer) + prerequisite checks. Subsequent sessions skip most of this.
+
+### Later sessions (warm)
+
+| Step | What happens | Savings |
+|------|-------------|---------|
+| Onboarding | Skipped — preferences file exists | ~1 min |
+| Order history | Loaded from `order-history-cache.json` if < 1 hour old | ~5–10s scraping avoided |
+| Favorites | Loaded from `favorites-cache.md` if < 7 days old | **~60s per date avoided** — the biggest win |
+| Option modals | Known items auto-handled from `items-with-options.md` | No dynamic judgment needed for familiar items |
+| Item selection | `item-reviews.md` ratings injected — 5/5 items surfaced, "never again" items excluded | More accurate, personalized picks |
+| Order calendar | Loaded from `order-calendar.md` (synced within 1 day) — skips live scrape | ~5–10s scraping avoided |
+| Variety tracking | `plan-cache.md` checked — avoids items ordered in the past N days | No accidental repeats |
+| Post-order | New reviews appended, plan cache updated | Gets smarter over time |
+
+**What accumulates over time:**
+- `favorites-cache.md` — rebuilt weekly, but skips scraping on most days
+- `items-with-options.md` — every new modal encounter teaches the skill; eventually covers all items you regularly order
+- `item-reviews.md` — the longer you use it, the more accurately Claude selects what you actually enjoy
+- `plan-cache.md` — rolling history window (`plan_cache_days`) ensures variety without getting stale
+
+---
 
 ## Automation Breakdown
 

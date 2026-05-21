@@ -22,28 +22,75 @@ You are ordering food from WeBox on behalf of the user. Use the `mcp__claude-in-
 
 ---
 
-## Step 0: First-Run Onboarding
+## Step 0: Prerequisites and First-Run Onboarding
+
+### 0a. Verify prerequisites
+
+Before anything else, run these checks:
+
+1. **Claude in Chrome connected?** Call `tabs_context_mcp`. If it returns no tabs or an error, stop and tell the user:
+   > Claude in Chrome doesn't seem to be connected. Please make sure Chrome is running with the Claude in Chrome extension enabled, then try again.
+
+2. **Logged into WeBox?** Navigate to `https://www.webox.com` and check whether the page shows a logged-in state (user avatar / name visible) or a login prompt. If not logged in, stop and tell the user:
+   > It looks like you're not logged into WeBox in Chrome. Please log in at webox.com and try again.
+
+### 0b. Check for first-run vs returning user
 
 Check whether `~/.webox-autopilot/user-preferences.md` exists.
 
-**If it does not exist**, run the onboarding flow before anything else:
+**If the file already exists:** skip to Step 1 — this is a returning user, no onboarding needed.
 
-1. Say:
+**If the file does not exist:** this is a first run. Do the following steps in order:
 
-   > Before I start ordering, I'd like to set up your preferences. Just tell me naturally — anything about your diet, foods you love or hate, allergens, cuisine preferences, how much you want to spend, whether you want me to confirm before ordering, etc. You can be as brief or detailed as you like, and mix languages freely.
+#### 0c. Ask the onboarding question
 
-2. Wait for the user's response.
+Say:
 
-3. Parse their reply and extract all relevant preferences. Map them to the fields in `user-preferences.md`. Use judgment for anything that doesn't map cleanly — put it in the free-text notes section at the bottom. Leave fields at their defaults if the user didn't mention them.
+> Before I start ordering, I'd like to set up your preferences. Just tell me naturally — anything about your diet, allergens, cuisines you love or hate, budget, whether you want me to ask before placing orders, etc. You can be as brief or detailed as you like, and mix languages freely.
 
-4. Write the populated `~/.webox-autopilot/user-preferences.md` file (create `~/.webox-autopilot/` directory if needed).
+#### 0d. While waiting — gather initial data in the background
 
-5. Echo back a brief summary of what you recorded, e.g.:
-   > Got it! I've set up your preferences: budget $25, vegetarian, prefer Chinese and Japanese, no mushrooms, confirm before ordering.
+Immediately after asking (before the user replies, in the same turn if possible), kick off the following so the data is ready when the user answers:
 
-6. Then continue to Step 1 and proceed with the order.
+1. **Scrape order history** from `https://www.webox.com/order/list/normal` — extract all recent ordered date+meal slots. Save to `~/.webox-autopilot/order-history-cache.json` with current timestamp.
 
-**If the file already exists**, skip to Step 1.
+2. **Scrape favorites** from `https://www.webox.com/menu/section/My%20Favorites?date=TODAY&shippingTime=Lunch` (use today's date). Scroll 10× to load all items. Save to `~/.webox-autopilot/favorites-cache.md` with today's date as `last_updated`.
+
+3. **Build initial order calendar** — from the order history, construct `~/.webox-autopilot/order-calendar.md`: a persistent local calendar of all known ordered slots. This is distinct from `plan-cache.md` (which tracks items and variety). The calendar's only job is to record *which date+meal slots are filled*, so the skill can skip them without re-scraping `/order/list/normal` each time.
+
+   Format:
+   ```markdown
+   # Order Calendar
+   last_synced: YYYY-MM-DD
+
+   ## 2026-05
+   - Mon 05/18 Lunch ✅
+   - Mon 05/18 Dinner ✅
+   - Tue 05/19 Lunch ✅
+   - Thu 05/21 Lunch ✅ #3258578
+   - Fri 05/22 Lunch ✅ #3258614
+   ```
+
+   **Calendar update rules:**
+   - Populated from `/order/list/normal` on first run
+   - Each time the skill places an order, append the new slot immediately (don't wait for the next full sync)
+   - `last_synced` is updated whenever a full scrape of order history is done
+   - The calendar is the **primary source of truth** for "is this slot already ordered?" — only fall back to a live scrape if `last_synced` is more than 1 day old
+
+These three operations happen before the user responds to the onboarding question. By the time they reply, all initial data is cached.
+
+#### 0e. Process the onboarding reply
+
+Parse the user's response and extract preferences. Map them to the fields in `user-preferences.md`. Use judgment for anything that doesn't fit a field — put it in the free-text notes section. Leave fields at their defaults if not mentioned.
+
+Write `~/.webox-autopilot/user-preferences.md` (create `~/.webox-autopilot/` if needed).
+
+Echo a brief confirmation:
+> Got it! Preferences saved: budget $25, vegetarian, prefer Chinese and Japanese, no mushrooms, I'll confirm before ordering.
+>
+> I also found your order history and favorites — you have X items on your favorites list and have already ordered through [latest date]. Ready to go.
+
+Then continue to Step 1 (most caches are already populated — steps 1d and 1e will be instant).
 
 ---
 
@@ -92,9 +139,11 @@ Check `~/.webox-autopilot/order-history-cache.json`:
 
 ## Step 2: Check Existing Orders (Avoid Double-Ordering)
 
-*Skip if order history cache is fresh (see Step 1d).*
+Use this decision tree:
 
-Navigate to `https://www.webox.com/order/list/normal` and extract already-ordered dates. Do this **once per session** and reuse the result for all days — don't re-scrape between slots.
+1. **Read `~/.webox-autopilot/order-calendar.md`** — if it exists and `last_synced` is within 1 day, use it as the authoritative source of already-ordered slots. No network request needed.
+
+2. **Otherwise**, scrape `/order/list/normal` once and update both `order-calendar.md` and `order-history-cache.json`:
 
 ```javascript
 (async () => {
@@ -108,7 +157,7 @@ Navigate to `https://www.webox.com/order/list/normal` and extract already-ordere
 })()
 ```
 
-Skip any target date+meal already in this list. Save result to `~/.webox-autopilot/order-history-cache.json`.
+After any successful checkout, **immediately append** the new slot to `order-calendar.md` — don't wait for the next sync.
 
 ## Step 3: Scrape Menu for Each Target Date
 
