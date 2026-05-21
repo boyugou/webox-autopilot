@@ -1,6 +1,6 @@
 ---
 name: webox
-description: General WeBox knowledge loader for ad-hoc tasks. Loads URL patterns, DOM selectors, and useful JavaScript snippets, then lets the agent decide how to handle the request. Use for free-form WeBox questions like "what's available for lunch tomorrow", "check my cart", "search for noodles on Friday", "show what's in my favorites" — anything that doesn't fit the dedicated webox-order / webox-favorite / webox-sync-calendar / webox-onboard / webox-reset skills.
+description: General WeBox knowledge loader for ad-hoc tasks. Loads URL patterns, DOM selectors, and useful JavaScript snippets, then lets the agent decide how to handle the request. Use for free-form WeBox questions like "what's available for lunch tomorrow", "check my cart", "search for noodles on Friday", "show what's in my favorites" — anything that doesn't fit the dedicated webox-order / webox-favorite / webox-sync / webox-onboard / webox-reset skills.
 ---
 
 # WeBox General Skill (Knowledge Loader)
@@ -51,7 +51,7 @@ Decide how to handle it. Common patterns:
 If the user's request matches a dedicated skill's job, suggest invoking that skill explicitly rather than improvising:
 
 - Wants to **place an order** → `/webox-order` (smart default, full curated menu) or `/webox-favorite` (favorites-only narrow)
-- Wants to **view/sync their order calendar** → `/webox-sync-calendar`
+- Wants to **view/sync their order calendar** → `/webox-sync`
 - Wants to **set up or update preferences** → `/webox-onboard`
 - Wants to **wipe local data** → `/webox-reset`
 

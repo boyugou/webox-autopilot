@@ -71,7 +71,7 @@ Both confirm onboarding actually ran (a stray preferences file alone — manuall
 >
 > What would you like to do?
 > 1. **Update preferences** — I'll ask what's changed
-> 2. **Re-sync order history** — pull the latest orders from WeBox (hands off to `webox-sync-calendar`)
+> 2. **Re-sync order history** — pull the latest orders from WeBox (hands off to `webox-sync`)
 > 3. **Clear menu caches** — force a fresh menu scrape on your next order
 > 4. **Update the skill** — pull the latest version from GitHub
 > 5. **Nothing** — just checking
@@ -169,7 +169,7 @@ The order list page is heavier than menu pages. **Keep scrolls fast (300ms) and 
 
 Empty result (new user, no orders) → create `~/Documents/WeBox/orders/.empty` marker so the "already onboarded" check in Step 2 succeeds on next run.
 
-**Recovery if CDP times out:** if this script times out, the order list page may be hung. Skip it for first-run (just create the `.empty` marker) — webox-sync-calendar will do the first sync later. Don't retry in onboarding — onboarding shouldn't block on this.
+**Recovery if CDP times out:** if this script times out, the order list page may be hung. Skip it for first-run (just create the `.empty` marker) — webox-sync will do the first sync later. Don't retry in onboarding — onboarding shouldn't block on this.
 
 #### 4b. Favorites scrape (SCRIPT_4B)
 
@@ -307,12 +307,12 @@ If scrape returned 0 orders (new user), create `~/Documents/WeBox/orders/.empty`
 
 ### 5c. Write today's menu cache (warm cache for first order)
 
-If the favorites scrape (Step 4b) returned items, write `~/Documents/WeBox/menu-cache/<TODAY>-Lunch.json`:
+If the favorites scrape (Step 4b) returned items, write `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json` (note: tomorrow, not today — Step 4b uses tomorrow's date):
 
 ```json
 {
   "cached_at": "ISO-8601",
-  "date": "<TODAY>",
+  "date": "<TOMORROW>",
   "meal": "Lunch",
   "sources": ["favorites"],
   "items": [
@@ -352,12 +352,12 @@ Create the `menu-cache/` directory if it doesn't exist. If favorites returned em
   preferences.md            — budget $30, prefer Chinese/Japanese, no mushrooms
   item-reviews.md           — empty (grows as you order and give feedback)
   orders/2026-W21.json, ... — X weeks of history, Y past active orders
-  menu-cache/<TODAY>.json   — X favorites scraped as warm cache for first order
+  menu-cache/<TOMORROW>.json — X favorites scraped as warm cache for first order
 
 You're ready to order! Try:
   "Order my lunch for tomorrow"        (default — curated full menu via webox-order)
   "Order from my favorites tomorrow"   (faster narrow scope via webox-favorite)
-  "Show my WeBox calendar"             (via webox-sync-calendar)
+  "Show my WeBox calendar"             (via webox-sync)
 ```
 
 Tailor the preferences summary line to what the user actually told you.

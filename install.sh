@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# webox-autopilot installer
+# webox-autopilot installer / updater
 # Usage: bash install.sh
 set -e
 
@@ -17,9 +17,30 @@ WEBOX_DIR="$HOME/Documents/WeBox"
 
 echo "Installing webox-autopilot skills..."
 
-# Install all six skills (and any sibling .md docs like SITEMAP.md)
-for skill in webox webox-onboard webox-order webox-favorite webox-sync-calendar webox-reset; do
+# Skills we currently ship
+CURRENT_SKILLS=(webox webox-onboard webox-order webox-favorite webox-sync webox-reset)
+
+# Skills we used to ship but no longer do — remove them so the user's
+# skill picker isn't polluted with stale entries.
+OBSOLETE_SKILLS=(webox-calendar webox-sync-calendar webox-sync-favorites webox-order-all)
+
+# Remove obsolete skill dirs (no-op if they don't exist)
+for old in "${OBSOLETE_SKILLS[@]}"; do
+  if [ -d "$CLAUDE_SKILLS/$old" ]; then
+    rm -rf "$CLAUDE_SKILLS/$old"
+    echo "  − removed obsolete: $old"
+  fi
+done
+
+# Install current skills (and any sibling .md docs like SITEMAP.md)
+for skill in "${CURRENT_SKILLS[@]}"; do
+  if [ ! -d "$SKILLS_SRC/$skill" ]; then
+    echo "  ⚠ source missing: $SKILLS_SRC/$skill — skipping"
+    continue
+  fi
   mkdir -p "$CLAUDE_SKILLS/$skill"
+  # Clear stale files in the target dir, then copy fresh
+  rm -f "$CLAUDE_SKILLS/$skill"/*.md
   cp "$SKILLS_SRC/$skill"/*.md "$CLAUDE_SKILLS/$skill/"
   echo "  ✓ $skill"
 done
@@ -30,9 +51,9 @@ mkdir -p "$WEBOX_DIR"
 echo "  ✓ Data directory ready at $WEBOX_DIR"
 
 echo ""
-echo "✅ Installed. Next step:"
+echo "✅ Installed/updated. Next step:"
 echo ""
 echo "   1. Start Claude Code with Chrome integration:  claude --chrome"
 echo "   2. Run:  /webox-onboard  (or say 'set up WeBox')"
 echo ""
-echo "Onboarding takes ~2 minutes and creates all your files in $WEBOX_DIR"
+echo "Re-run this same script anytime to upgrade — your $WEBOX_DIR data is untouched."

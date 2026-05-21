@@ -34,7 +34,7 @@ Claude Code reads `CLAUDE.md` and follows the install steps automatically.
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Either option installs six skills: `webox`, `webox-onboard`, `webox-order`, `webox-favorite`, `webox-sync-calendar`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
+Either option installs six skills: `webox`, `webox-onboard`, `webox-order`, `webox-favorite`, `webox-sync`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
 
 The same one-liner upgrades to the latest version. Your `~/Documents/WeBox/` data is never touched by install or update.
 
@@ -54,7 +54,7 @@ The same one-liner upgrades to the latest version. Your `~/Documents/WeBox/` dat
 | `webox-onboard` | `/webox-onboard` or "set up WeBox" | First-time setup: preferences, favorites, history. Also handles skill updates. **Run this first.** |
 | `webox-order` | "Order my lunch for tomorrow" | **Primary ordering.** Curated full-menu scrape (favorites + preferred cuisines + filler categories), plan within budget, cart, checkout. |
 | `webox-favorite` | "Order from my usuals" / "Stick to favorites" | Narrow variant — favorites-only scope, faster (~5s/slot). |
-| `webox-sync-calendar` | "Show my WeBox calendar" / "Sync my orders" | Pull latest history from WeBox, display this week + next week. |
+| `webox-sync` | "Show my WeBox calendar" / "Sync everything" | Pull latest history from WeBox, display this week + next week. |
 | `webox-reset` | "Reset WeBox" / "Start over" | Wipe all local data in ~/Documents/WeBox/ and re-onboard. |
 | `webox` | "What's available on WeBox for Friday?" / ad-hoc | General knowledge loader for free-form WeBox tasks — search, inspect, browse. Loads URL/DOM reference and lets the agent improvise. |
 

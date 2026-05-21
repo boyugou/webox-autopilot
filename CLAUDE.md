@@ -15,7 +15,7 @@ A set of six Claude Code skills that autonomously order food from [WeBox](https:
 - **`webox-onboard`** — first-time setup (run this first)
 - **`webox-order`** — primary ordering. Curated full-menu scrape (favorites + preferred cuisines + filler categories), plan within budget, cart, checkout.
 - **`webox-favorite`** — narrow variant: favorites-only scope, faster (~5s/slot) but limited
-- **`webox-sync-calendar`** — pull latest order history from WeBox, display this week + next week
+- **`webox-sync`** — pull latest order history from WeBox, display this week + next week
 - **`webox-reset`** — wipe local data and re-onboard
 - **`webox`** — general knowledge loader for ad-hoc tasks (search, inspect, browse) — loads SITEMAP.md and lets the agent improvise
 
@@ -121,7 +121,7 @@ webox-autopilot/
 │   ├── webox-onboard/SKILL.md       # First-time setup + skill updates
 │   ├── webox-order/SKILL.md         # Primary ordering — curated full menu by default
 │   ├── webox-favorite/SKILL.md      # Thin variant — favorites-only narrow scope
-│   ├── webox-sync-calendar/SKILL.md # Sync order history from WeBox + display weekly calendar
+│   ├── webox-sync/SKILL.md # Sync order history from WeBox + display weekly calendar
 │   └── webox-reset/SKILL.md         # Wipe + re-onboard
 ├── CLAUDE.md                        # This file
 ├── README.md                        # User-facing docs
@@ -139,7 +139,7 @@ webox-autopilot/
 preferences.md           ←── created by webox-onboard from user reply, edited freely
 item-reviews.md          ←── written by webox-order Step 10 + free-form user feedback
 orders/YYYY-Www.json     ←── written by webox-order Step 6 (planned) and Step 8 (active);
-                              synced by webox-sync-calendar from WeBox order list page
+                              synced by webox-sync from WeBox order list page
                               (cancelled/refunded filtered out at sync time)
 menu-cache/SLOT.json     ←── per-slot, written by webox-order or webox-favorite,
                               auto-pruned after 24h, TTL 60min

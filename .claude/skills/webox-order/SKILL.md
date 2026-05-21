@@ -163,7 +163,7 @@ For each scraped order:
 1. Convert `"Mon 05/18"` to a full ISO date using the current year (or previous year if the resulting date is in the future).
 2. Compute the ISO week → `YYYY-Www`.
 3. Read or create `~/Documents/WeBox/orders/<YYYY-Www>.json`.
-4. Dedupe by `orderId` and merge. Preserve any local `status: "planned"` entries.
+4. Dedupe by `date+meal+first item name` (orderId is no longer in the output). Preserve any local `planned: true` entries.
 5. Update `synced_at` on every touched week file.
 
 ---
@@ -370,7 +370,7 @@ Wait for reply, apply changes, re-confirm once before proceeding.
 
 ## Step 6: Save Plan to Order History
 
-Before any cart action, write each planned slot to the appropriate per-week file in `~/Documents/WeBox/orders/`. Status `"planned"`. After successful checkout, update to `"active"` with the order number and actual total.
+Before any cart action, write each planned slot to the appropriate per-week file in `~/Documents/WeBox/orders/`. Status `"planned"`. After successful checkout, remove the `planned: true` flag from the entry — that's how downstream code distinguishes active vs not-yet-placed.
 
 Same schema as Step 1c.
 
@@ -490,7 +490,7 @@ If everything matches:
 ```
 
 After success, immediately update the per-week order file:
-- `status: "planned"` → `status: "active"` with the orderId
+- Remove `planned: true` from the entry
 - Update `total` if it differs
 
 ```
