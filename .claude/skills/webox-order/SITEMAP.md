@@ -222,6 +222,12 @@ const loggedIn = !!document.querySelector('a.cart.fr, [class*="user-avatar"], [c
 - BUT we've observed inconsistent results when scraping multiple tabs in parallel — some background scrapes may return partial item lists silently.
 - Safest contract: **scrape one tab at a time, in the foreground**. The wall-time cost is acceptable (~3-5s per scrape with smart-scroll).
 
+## Multi-window parallelism
+
+Claude in Chrome's MCP tools do NOT support programmatically opening new Chrome windows (only new tabs within the current group). Multi-window parallelism would require the USER to manually launch a second Chrome instance, which the skill cannot orchestrate.
+
+This means parallel multi-tab scraping is the only available parallelism, and it's unreliable for lazy-loaded pages (see above). Stick with sequential scraping.
+
 ---
 
 ## Useful tiny scripts
