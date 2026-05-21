@@ -10,7 +10,7 @@ This file is for **two audiences**:
 
 ### What this repo is
 
-A set of six Claude Code skills that autonomously order food from [WeBox](https://webox.com) using the user's logged-in Chrome browser:
+A set of seven Claude Code skills that autonomously order food from [WeBox](https://webox.com) using the user's logged-in Chrome browser:
 
 - **`webox-onboard`** — first-time setup (run this first)
 - **`webox-order`** — primary ordering: API menu fetch, plan within budget, place via `POST /api/orders`
@@ -18,6 +18,7 @@ A set of six Claude Code skills that autonomously order food from [WeBox](https:
 - **`webox-sync`** — pull latest history + favorites/hidden + warm-cache menus; display the calendar
 - **`webox-reset`** — wipe local data and re-onboard
 - **`webox`** — general knowledge loader for ad-hoc tasks (search, inspect, bulk hide/favorite, browse)
+- **`webox-update`** — pull the latest skill files from GitHub, preserve user data
 
 **API-first architecture.** Every read and write goes through WeBox's JSON API (documented in `webox/SITEMAP.md`). No DOM scraping, no scroll loops, no virtualization workarounds. Operations that used to take 30+ seconds now take ~1 second.
 

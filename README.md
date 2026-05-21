@@ -2,7 +2,7 @@
 
 > Order your WeBox meals autonomously with Claude Code — API-first, budget-aware, variety-conscious, fully transparent.
 
-**webox-autopilot** is a set of six Claude Code skills that order food from [WeBox](https://webox.com) by talking to Claude in plain language. Every read and write goes through WeBox's JSON API — no DOM scraping, no scroll loops. Fetching the entire menu takes ~1 second. Placing an order is one POST.
+**webox-autopilot** is a set of seven Claude Code skills that order food from [WeBox](https://webox.com) by talking to Claude in plain language. Every read and write goes through WeBox's JSON API — no DOM scraping, no scroll loops. Fetching the entire menu takes ~1 second. Placing an order is one POST.
 
 ```
 Order lunch and dinner Mon–Fri next week, Chinese and Japanese only.
@@ -65,7 +65,7 @@ Chrome silently blocks the 2nd+ automatic download per origin unless you allow i
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-This installs six skill directories into `~/.claude/skills/webox*/` and creates an empty `~/Documents/WeBox/` data directory. It does NOT touch any existing data in `~/Documents/WeBox/`.
+This installs seven skill directories into `~/.claude/skills/webox*/` and creates an empty `~/Documents/WeBox/` data directory. It does NOT touch any existing data in `~/Documents/WeBox/`.
 
 *Alternative — let Claude Code do it for you:* in any Claude Code session, paste:
 > Install webox-autopilot from https://github.com/boyugou/webox-autopilot, then run /webox-onboard.
@@ -107,7 +107,7 @@ Then restart Claude Code so the new skill files are loaded.
 Full reinstall — wipe local data + reinstall + re-onboard (one line):
 
 ```bash
-rm -rf ~/Documents/WeBox ~/.claude/skills/webox ~/.claude/skills/webox-onboard ~/.claude/skills/webox-order ~/.claude/skills/webox-favorite ~/.claude/skills/webox-sync ~/.claude/skills/webox-reset && git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
+rm -rf ~/Documents/WeBox ~/.claude/skills/webox ~/.claude/skills/webox-onboard ~/.claude/skills/webox-order ~/.claude/skills/webox-favorite ~/.claude/skills/webox-sync ~/.claude/skills/webox-reset ~/.claude/skills/webox-update && git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
 Then restart Claude Code and run `/webox-onboard`.
@@ -133,6 +133,7 @@ The Chrome "automatic downloads" permission from setup step 2 is persistent — 
 | `webox-favorite` | "Order from my usuals" / "Stick to favorites" | Narrow variant — same flow, filtered to your hearted items. |
 | `webox-sync` | "Show my WeBox calendar" / "Sync everything" | Refresh history + favorites/hidden + upcoming-slot menus via API, then display the weekly calendar. |
 | `webox-reset` | "Reset WeBox" / "Start over" | Wipe all local data in ~/Documents/WeBox/ and re-onboard. |
+| `webox-update` | "Update webox-autopilot" / "Pull the latest" | Pull the latest skill files from GitHub. Preserves all your data in ~/Documents/WeBox/. Restart Claude Code after to activate. |
 | `webox` | "What's available friday?" / "Hide all sugary drinks" / ad-hoc | General API loader for free-form tasks — search, inspect, bulk hide/favorite, browse. |
 
 ## Usage

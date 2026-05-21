@@ -18,7 +18,7 @@ WEBOX_DIR="$HOME/Documents/WeBox"
 echo "Installing webox-autopilot skills..."
 
 # Skills we currently ship
-CURRENT_SKILLS=(webox webox-onboard webox-order webox-favorite webox-sync webox-reset)
+CURRENT_SKILLS=(webox webox-onboard webox-order webox-favorite webox-sync webox-reset webox-update)
 
 # Skills we used to ship but no longer do — remove them so the user's
 # skill picker isn't polluted with stale entries.
