@@ -28,13 +28,15 @@ Install webox-autopilot from https://github.com/boyugou/webox-autopilot, then ru
 
 Claude Code reads `CLAUDE.md` and follows the install steps automatically.
 
-**Option B — one-liner:**
+**Option B — one-liner (also works for updates):**
 
 ```bash
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Either installs six skills: `webox`, `webox-onboard`, `webox-order`, `webox-favorite`, `webox-sync-calendar`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
+Either option installs six skills: `webox`, `webox-onboard`, `webox-order`, `webox-favorite`, `webox-sync-calendar`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
+
+The same one-liner upgrades to the latest version. Your `~/Documents/WeBox/` data is never touched by install or update.
 
 ## Requirements
 
