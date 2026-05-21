@@ -34,11 +34,11 @@ If not logged in: ask user to log in. If `address-info.json` is missing locally:
 
 ---
 
-## Step 2: Refresh Favorites + Hidden Lists (chunked, with diff)
+## Step 2: Refresh Favorites + Hidden Lists (download bypass + diff)
 
-Refreshing requires the current menu's `products` array to resolve IDs → readable names. Use the **same Step-6a/6b/6c chunked pattern** as `webox-onboard`. Detailed scripts there; condensed below.
+Use the **same flow as `webox-onboard` Step 6** — see that skill for the empirically-tested scripts. Brief recap below.
 
-### 2a — Fetch + enrich + stash, return summary only
+### 2a — Fetch + enrich + stash + download favorites.json (one JS call)
 
 ```javascript
 (async (addrId, date) => {
@@ -69,20 +69,76 @@ Refreshing requires the current menu's `products` array to resolve IDs → reada
   const hideEn = enrichP(hideR.data?.productIdList);
   window.__favPayload  = { synced_at: now, products: favEn.products,  unresolvedProductIds: favEn.unresolved,  brands: enrichB(favR.data?.brandIdList) };
   window.__hidePayload = { synced_at: now, products: hideEn.products, unresolvedProductIds: hideEn.unresolved, brands: enrichB(hideR.data?.brandIdList) };
-  window.__weboxMenuRaw = menuR.data;  // available for Step 4 warm-cache
+  window.__weboxMenuRaw = menuR.data;
+  const favJson = JSON.stringify(window.__favPayload, null, 2);
+  const blob = new Blob([favJson], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `webox-favorites-${Date.now()}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
   return JSON.stringify({
-    favCount: favEn.products.length, favUnresolved: favEn.unresolved.length, favBrandCount: (favR.data?.brandIdList||[]).length,
-    hideCount: hideEn.products.length, hideUnresolved: hideEn.unresolved.length, hideBrandCount: (hideR.data?.brandIdList||[]).length,
+    downloadedAs: a.download, favBytes: favJson.length,
+    favCount: favEn.products.length, favUnresolved: favEn.unresolved.length,
+    hideCount: hideEn.products.length, hideUnresolved: hideEn.unresolved.length,
     synced_at: now
   });
-})(/* addrId integer */, /* 'YYYY-MM-DD' */)
+})(/* addrId integer */, /* 'YYYY-MM-DD' tomorrow */)
 ```
 
-### 2b/2c — Chunked retrieval (5 products per call, flat JSON)
+### 2a-bash — Move + diff against existing local file
+
+```bash
+sleep 1.5
+F="$HOME/Downloads/<downloadedAs from JS>"
+if [ -f "$F" ]; then
+  # Compare new with old, log the diff, then overwrite.
+  python3 << 'EOF'
+import json, os
+new = json.load(open(os.path.expanduser("$F")))
+new_ids = {p["id"] for p in new["products"]}
+target = os.path.expanduser("~/Documents/WeBox/favorites.json")
+if os.path.exists(target):
+    old = json.load(open(target))
+    old_ids = {p["id"] for p in old.get("products", [])}
+    added = new_ids - old_ids
+    removed = old_ids - new_ids
+    if added: print(f"  + Hearted since last sync: {len(added)}")
+    if removed: print(f"  - Unhearted since last sync: {len(removed)}")
+import shutil
+shutil.move(os.path.expanduser("$F"), target)
+print(f"✓ favorites.json: {len(new['products'])} products, {len(new['unresolvedProductIds'])} unresolved")
+EOF
+else
+  echo "Download didn't land — falling back to chunked. See 2-fallback below."
+fi
+```
+
+### 2b — Download hidden.json (second JS call)
+
+```javascript
+(async () => {
+  const hideJson = JSON.stringify(window.__hidePayload, null, 2);
+  const blob = new Blob([hideJson], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `webox-hidden-${Date.now()}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  return JSON.stringify({ downloadedAs: a.download, bytes: hideJson.length, hideCount: window.__hidePayload.products.length });
+})()
+```
+
+Same Bash recipe as 2a — `mv` from `~/Downloads` to `~/Documents/WeBox/hidden.json` with diff logging.
+
+### 2-fallback — Chunked retrieval (when download bypass fails)
+
+If a file didn't land in `~/Downloads`, Chrome's automatic-downloads permission isn't granted for `[*.]webox.com`. Tell the user to set it up (`chrome://settings/content/automaticDownloads`) and fall back to:
 
 ```javascript
 // favorites chunk; loop offset = 0, 5, 10, ... until done: true
-// 5 items per chunk + flat JSON keeps every return under the ~1000-char tool-result truncation limit
 (async (offset) => {
   const products = window.__favPayload?.products || [];
   const chunk = products.slice(offset, offset + 5);
@@ -90,43 +146,7 @@ Refreshing requires the current menu's `products` array to resolve IDs → reada
 })(/* offset integer */)
 ```
 
-**On every chunk, verify `chunkCount === 5`** (or `< 5` only when `done: true`). If a chunk returns fewer items unexpectedly, re-fetch that offset. Do NOT use larger chunk sizes — they will silently drop data past the truncation limit.
-
-Then tail call for brands + unresolved:
-```javascript
-JSON.stringify({ synced_at: window.__favPayload.synced_at, brands: window.__favPayload.brands, unresolvedProductIds: window.__favPayload.unresolvedProductIds })
-```
-
-Identical for `__hidePayload` → `hidden.json`.
-
-### 2d — Diff vs the existing local file before overwriting
-
-Before writing the new `favorites.json`, read the old one (if it exists) and compute the symmetric diff on `products[].id`. Surface in the Step 6 summary:
-- Hearted since last sync: products in new list but not old
-- Unhearted since last sync: products in old list but not new
-
-Then write the new enriched objects.
-
-### Schema (same as onboard Step 6)
-
-```json
-{
-  "synced_at": "ISO-8601",
-  "products": [
-    { "id": 500874, "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "category": "Chinese" }
-  ],
-  "unresolvedProductIds": [202759],
-  "brands": []
-}
-```
-
-### Verification
-
-```bash
-python3 -c "import json; d=json.load(open('$HOME/Documents/WeBox/favorites.json')); print('favorites:', len(d['products']), 'products,', len(d['unresolvedProductIds']), 'unresolved')"
-```
-
-Must match the counts from 2a. If short, a chunk got dropped — re-run from the missing offset.
+Then tail call for brands + unresolved, assemble in agent state, Write tool. Identical pattern for `__hidePayload`. ~40 round-trips total.
 
 ---
 
@@ -195,15 +215,81 @@ Same accumulate-on-page + return-summary pattern as webox-onboard Step 5. Stash 
 })()
 ```
 
-**Then paginate `window.__weboxOrders` back in chunks of 3** to build the per-week files:
+**Then download the full orders list in one call (preferred — needs Chrome auto-download permission):**
+
 ```javascript
 (async () => {
-  const offset = /* agent: 0, 50, 100, ... */;
-  const chunk = (window.__weboxOrders || []).slice(offset, offset + 3);
-  return JSON.stringify({ offset, count: chunk.length, orders: chunk });
+  const orders = window.__weboxOrders || [];
+  const json = JSON.stringify({ count: orders.length, orders }, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `webox-orders-${Date.now()}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  return JSON.stringify({ downloadedAs: a.download, bytes: json.length, count: orders.length });
 })()
 ```
-Loop until `count === 0`. Each chunk ~10KB — well within tool limits.
+
+Bash — wait, group by ISO week, write per-week files (preserves any `planned: true` entries):
+```bash
+sleep 1.5
+F="$HOME/Downloads/<downloadedAs from JS>"
+if [ -f "$F" ]; then
+  uv run --no-project python3 << 'EOF'
+import json, os, datetime, glob
+src = json.load(open(os.path.expanduser("$F")))
+out_dir = os.path.expanduser("~/Documents/WeBox/orders")
+os.makedirs(out_dir, exist_ok=True)
+# Preserve any existing planned: true entries
+planned = {}
+for f in glob.glob(f"{out_dir}/*.json"):
+    try:
+        d = json.load(open(f))
+        for o in d.get("orders", []):
+            if o.get("planned"):
+                planned[(o["date"], o["meal"])] = o
+    except Exception: pass
+weeks = {}
+for o in src["orders"]:
+    d = datetime.datetime.fromtimestamp(o["dateShippingMs"]/1000, tz=datetime.timezone.utc).date()
+    iy, iw, _ = d.isocalendar()
+    key = f"{iy}-W{iw:02d}"
+    weeks.setdefault(key, []).append({
+        "date": d.isoformat(), "day": d.strftime("%a"),
+        "meal": o["timeShipping"], "orderId": o["orderId"],
+        "total": o["total"], "items": o["items"],
+    })
+# Merge in planned entries that aren't already in the synced set
+for (date, meal), p in planned.items():
+    iy, iw, _ = datetime.date.fromisoformat(date).isocalendar()
+    key = f"{iy}-W{iw:02d}"
+    existing = next((x for x in weeks.get(key, []) if x["date"] == date and x["meal"] == meal), None)
+    if not existing:
+        weeks.setdefault(key, []).append(p)
+for week, entries in weeks.items():
+    ws = datetime.date.fromisocalendar(int(week[:4]), int(week[6:]), 1).isoformat()
+    json.dump({"week": week, "week_starts": ws,
+               "synced_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+               "orders": sorted(entries, key=lambda x: x["date"], reverse=True)},
+              open(f"{out_dir}/{week}.json","w"), indent=2)
+print(f"✓ wrote {len(weeks)} week files, {sum(len(v) for v in weeks.values())} orders")
+EOF
+  rm "$F"
+else
+  echo "Download didn't land. Falling back to chunked retrieval."
+fi
+```
+
+**Fallback (when bypass fails):**
+```javascript
+(async (offset) => {
+  const chunk = (window.__weboxOrders || []).slice(offset, offset + 3);
+  return JSON.stringify({ offset, count: chunk.length, orders: chunk });
+})(/* offset */)
+```
+Loop until `count === 0`. ~135 round-trips for a 400-order history. Process per-week in agent state.
 
 **Default loop bound:** stop early once you've fetched `history_window_days × 1.5` worth (≈ 30 weeks ≈ 60 pages ≈ 6 seconds). If the user says "pull all my history", remove that bound and fetch all `totalCount` orders.
 
@@ -262,7 +348,7 @@ function isoWeek(d) {
 
 ## Step 4: Warm-Cache Upcoming Menus
 
-Identify the next 1–2 orderable Lunch slots (and corresponding Dinners if within the 7-day window). For each, fetch the menu via API. Loop:
+Identify the next 1–2 orderable Lunch slots (and corresponding Dinners if within the 7-day window). For each, fetch + trigger download — same pattern as `webox-order` Step 2b. One JS call + one Bash mv per slot:
 
 ```javascript
 (async (date, meal) => {
@@ -270,7 +356,7 @@ Identify the next 1–2 orderable Lunch slots (and corresponding Dinners if with
   const r = await fetch(`/api/productSpecials/v8/address/${addrId}/date/${date}`, { credentials: 'include' });
   const j = await r.json();
   if (j.code !== 1) return JSON.stringify({ error: 'menu fetch failed', date, meal, code: j.code });
-  const specialsKey = meal.toLowerCase() + 'Specials';  // lunchSpecials | dinnerSpecials | happyHourSpecials
+  const specialsKey = meal.toLowerCase() + 'Specials';
   const specials = j.data[specialsKey];
   const { products, productBrands } = j.data;
   const productById = new Map(products.map(p => [p.id, p]));
@@ -288,26 +374,51 @@ Identify the next 1–2 orderable Lunch slots (and corresponding Dinners if with
       return {
         name: p.extName?.enUs,
         brand: brandById.get(p.brandId)?.extName?.enUs,
-        price: s.price,
-        category: p.category,
+        price: s.price, category: p.category,
         rating: p.averageRating || null,
         in_favorites: favIds.has(p.id),
         dietary: {
           glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
           nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
         },
-        stockQuantity: s.stockQuantity,                   // 0 = unlimited; >0 = finite remaining
+        stockQuantity: s.stockQuantity,
         productId: p.id, productSpecialId: s.id,
-        portionId: portion?.id || null,                  // from product.extPortions (isDefault preferred)
-        portionCount: (p.extPortions || []).length       // >1 means user-facing portion choice exists
+        portionId: portion?.id || null,
+        portionCount: (p.extPortions || []).length
       };
     })
     .filter(Boolean);
-  return JSON.stringify({ date, meal, kitchenId, items });
-})('2026-05-22', 'Lunch')
+  const cache = { cached_at: new Date().toISOString(), date, meal, kitchenId, items };
+  const json = JSON.stringify(cache, null, 2);
+  // Stash for fallback
+  window[`__weboxMenu_${date}_${meal}`] = items;
+  // Trigger download
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `webox-menu-${date}-${meal}-${Date.now()}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  return JSON.stringify({ downloadedAs: a.download, bytes: json.length, itemCount: items.length, date, meal });
+})(/* 'YYYY-MM-DD' */, /* 'Lunch' | 'Dinner' */)
 ```
 
-Write each to `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`:
+Bash:
+```bash
+sleep 1.5
+F="$HOME/Downloads/<downloadedAs from JS>"
+if [ -f "$F" ]; then
+  mkdir -p ~/Documents/WeBox/menu-cache
+  mv "$F" ~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json
+fi
+```
+
+If download didn't land → fall back to chunked retrieval from `window.__weboxMenu_<date>_<meal>` (same 5-item chunk pattern as Step 2 fallback).
+
+Skip this step entirely if the user said "just sync orders, don't touch menus".
+
+Schema written to `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`:
 ```json
 {
   "cached_at": "ISO-8601",
