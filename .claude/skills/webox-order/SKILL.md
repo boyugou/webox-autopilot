@@ -72,23 +72,23 @@ Read week files overlapping `history_window_days` (typically last 4 weeks + curr
 
 **Critical:** local `orders/YYYY-Www.json` files only get fully synced during `/webox-onboard` or `/webox-sync`. Orders placed between syncs are invisible if you trust the local files alone. This caused a real bug where the agent said "no orders this week" when the user actually had several active orders that just hadn't been synced locally yet.
 
-**Mandatory step:** before any planning, fetch the latest ~20 orders from the WeBox API and merge into local state. One quick call, ~150 ms.
+**Mandatory step:** before any planning, fetch the latest ~30 orders from the WeBox API and merge into local state. One quick call, ~300ms.
+
+**Important:** Include ALL statuses in the URL (Paid + Planned + ... + Refunded + Cancelled). Why: orders that the user has CANCELLED since the last sync need to disappear from local "✅ ordered" markings to free up the slot. If you exclude Cancelled/Refunded from the URL, your merge won't know that a previously-active order is now dead.
 
 ```javascript
 (async () => {
-  const params = 'client=web&status=Paid%2CPartialRefunded%2CPlanned%2CUnpaid%2COnHold&pageSize=20&pageIndex=1&type=Individual&orderBy=id&desc=true&referenceTypes=GROUP_ORDER_META';
+  // ALL statuses in URL — including Refunded/Cancelled so we can detect newly-dead orders.
+  const params = 'client=web&status=Paid%2CPartialRefunded%2CPlanned%2CUnpaid%2CRefunded%2CCancelled%2COnHold&pageSize=30&pageIndex=1&type=Individual&orderBy=id&desc=true&referenceTypes=GROUP_ORDER_META';
   const r = await fetch(`/api/orders/list?${params}`, { credentials: 'include' });
   const j = await r.json();
   if (j.code !== 1) return JSON.stringify({ error: 'orders fetch failed', code: j.code });
-  const recent = [];
+  const all = [];
   for (const o of (j.data.result || [])) {
-    // Include Paid (active), Planned (future-scheduled), PartialRefunded — anything that occupies a slot.
-    // Skip Refunded / Cancelled only.
-    if (['Refunded', 'Cancelled'].includes(o.order?.status)) continue;
     for (const pkg of (o.orderPackages || [])) {
-      recent.push({
+      all.push({
         orderId: 'No.' + o.order.id,
-        status: o.order.status,
+        status: o.order.status,                       // keep status so merge step knows what to do
         dateShippingMs: pkg.dateShipping,
         timeShipping: pkg.timeShipping,
         total: o.order.totalCharge || 0,
@@ -99,45 +99,74 @@ Read week files overlapping `history_window_days` (typically last 4 weeks + curr
       });
     }
   }
-  return JSON.stringify({ count: recent.length, totalCount: j.data.totalCount, recent });
+  return JSON.stringify({ count: all.length, totalCount: j.data.totalCount, all });
 })()
 ```
 
-Then **merge into the appropriate per-week file**:
+**Merge semantics in Bash/Python after this fetch:**
+1. For each `all[i]` whose status is `Paid` / `Planned` / `PartialRefunded` / `Unpaid` / `OnHold` → upsert into the per-week file (it occupies a slot).
+2. For each `all[i]` whose status is `Refunded` / `Cancelled` → **remove any matching local entry** by `orderId` (the slot is now free again).
+
+Then **merge into the appropriate per-week file** with proper Cancelled/Refunded eviction:
 ```bash
-# In Bash, after the JS returns the array, run this Python:
+# Paste the JS-returned 'all' array as a Python literal:
 uv run --no-project python3 << 'EOF'
 import json, os, datetime
-# Paste the JS-returned 'recent' array here as a Python literal, OR read it from a tmpfile.
-recent = $RECENT_JSON
+RECENT = $ALL_JSON  # the 'all' array from the JS above
+DEAD_STATUSES = {'Refunded', 'Cancelled'}
 out_dir = os.path.expanduser("~/Documents/WeBox/orders")
 os.makedirs(out_dir, exist_ok=True)
-by_week = {}
-for o in recent:
+
+# Bucket fetched orders by week and into upsert/evict sets
+upserts_by_week, dead_orderIds = {}, set()
+for o in RECENT:
     d = datetime.datetime.fromtimestamp(o["dateShippingMs"]/1000, tz=datetime.timezone.utc).date()
-    iy, iw, _ = d.isocalendar()
-    by_week.setdefault(f"{iy}-W{iw:02d}", []).append({
-        "date": d.isoformat(), "day": d.strftime("%a"),
-        "meal": o["timeShipping"], "orderId": o["orderId"],
-        "status": o["status"], "total": o["total"], "items": o["items"]
-    })
-for week, entries in by_week.items():
+    week_key = f"{d.isocalendar()[0]}-W{d.isocalendar()[1]:02d}"
+    if o["status"] in DEAD_STATUSES:
+        dead_orderIds.add(o["orderId"])  # mark for removal
+    else:
+        upserts_by_week.setdefault(week_key, []).append({
+            "date": d.isoformat(), "day": d.strftime("%a"),
+            "meal": o["timeShipping"], "orderId": o["orderId"],
+            "status": o["status"], "total": o["total"], "items": o["items"]
+        })
+
+# All weeks that need rewriting: upsert weeks PLUS any weeks containing dead orderIds
+import glob
+affected_weeks = set(upserts_by_week.keys())
+for path in glob.glob(f"{out_dir}/*.json"):
+    try:
+        d = json.load(open(path))
+        if any(e.get("orderId") in dead_orderIds for e in d.get("orders", [])):
+            affected_weeks.add(os.path.splitext(os.path.basename(path))[0])
+    except Exception: pass
+
+now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+n_upserts, n_evicts = 0, 0
+for week in affected_weeks:
     path = f"{out_dir}/{week}.json"
     if os.path.exists(path):
-        old = json.load(open(path))
-        existing = {(e["date"], e["meal"]): e for e in old["orders"]}
-        for e in entries: existing[(e["date"], e["meal"])] = e
-        old["orders"] = sorted(existing.values(), key=lambda x: x["date"], reverse=True)
-        old["synced_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        json.dump(old, open(path,"w"), indent=2)
+        cur = json.load(open(path))
+        existing = {e["orderId"]: e for e in cur.get("orders", []) if e.get("orderId") not in dead_orderIds}
+        n_evicts += len(cur.get("orders", [])) - len(existing)
     else:
-        ws = datetime.date.fromisocalendar(int(week[:4]), int(week[6:]), 1).isoformat()
-        json.dump({"week": week, "week_starts": ws,
-                   "synced_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                   "orders": entries}, open(path,"w"), indent=2)
-print("✓ merged", len(recent), "recent orders into", len(by_week), "week files")
+        existing = {}
+    for e in upserts_by_week.get(week, []):
+        if e["orderId"] not in existing:
+            n_upserts += 1
+        existing[e["orderId"]] = e
+    ws = datetime.date.fromisocalendar(int(week[:4]), int(week[6:]), 1).isoformat()
+    json.dump({"week": week, "week_starts": ws, "synced_at": now,
+               "orders": sorted(existing.values(), key=lambda x: x["date"], reverse=True)},
+              open(path, "w"), indent=2)
+print(f"✓ merged: +{n_upserts} new/updated, −{n_evicts} cancelled/refunded, across {len(affected_weeks)} week files")
 EOF
 ```
+
+This way:
+- A newly-placed order shows up (upsert).
+- An order the user cancelled disappears from local state (evict), freeing the slot.
+- Existing untouched orders are preserved (we only modify the affected weeks).
 
 **Status filter rationale:** include `Paid` (active), `Planned` (future-scheduled — common case where the user pre-ordered for later in the week), `PartialRefunded`, `Unpaid`, `OnHold`. Exclude only `Refunded` and `Cancelled` — those slots are open again.
 
