@@ -145,8 +145,7 @@ Settings live in two files in `~/Documents/WeBox/` (visible in Finder — edit a
 |---|---|---|---|
 | `avoid_repeat_days` | int | `7` | Don't re-order the same **main** within this many days |
 | `history_window_days` | int | `28` | Days of order-history loaded into context |
-| `allow_repeat_categories` | list | `[Drink, Side, Snack, Dairy & Eggs, Produce]` | Categories exempt from variety rules |
-| `allow_repeat_patterns` | list | `[milk, water, tea egg, sparkling, coconut, juice, yogurt]` | Name patterns exempt from variety rules |
+| `allow_repeat_categories` | list | `[Beverage, Appetizer, Snacks, Salads]` | Item categories exempt from variety rules (filler items can repeat freely) |
 
 ### Dietary
 
@@ -154,7 +153,7 @@ Settings live in two files in `~/Documents/WeBox/` (visible in Finder — edit a
 |---|---|---|---|
 | `restrictions` | list | `[none]` | `vegetarian`, `vegan`, `gluten-free`, `halal`, `kosher`, ... |
 | `avoid_allergens` | list | `[none]` | `nuts`, `shellfish`, `dairy`, `eggs`, `soy`, ... |
-| `preferred_cuisines` | list | `[Chinese, Japanese]` | Cuisines to prioritize |
+| `preferred_cuisines` | list | `[]` | Cuisines to prioritize (empty = no bias) |
 | `cuisines_to_avoid` | list | `[none]` | Cuisines to never order |
 | `foods_i_like` | list | `[none]` | Free-text patterns |
 | `foods_to_avoid` | list | `[none]` | Free-text patterns |
@@ -283,7 +282,7 @@ A: Filtered by the API (`stockStatus`). If something went out of stock between m
 A: Just say it: "order 5 waters with Thursday lunch". Quantities are first-class.
 
 **Q: I keep wanting milk every day — won't variety rules block that?**
-A: No. Fillers (Drink, Side, Snack, Dairy & Eggs, etc.) are exempt via `allow_repeat_categories` and `allow_repeat_patterns`.
+A: No. Fillers (Beverage, Appetizer, Snacks, etc.) are exempt via `allow_repeat_categories`.
 
 **Q: Can I cancel an order it placed?**
 A: Yes — at webox.com/order/list/normal. On next sync, the slot will be marked open again.

@@ -494,7 +494,7 @@ This gives you safety (config can't drift off-schema) and freedom (notes can cap
 **Bad agent behavior we have seen and must not repeat:** earlier runs produced a preferences file with fabricated keys like `target_per_meal`, `soft_cap`, `strictly_avoid`, `prefer_instead`, `chinese_target_per_week`, `per_meal_structure`. **None of these exist in the schema.** They break every downstream skill that reads the canonical keys.
 
 The complete set of allowed top-level keys in `config.yaml` (from the template — no others):
-`budget`, `budget_mode`, `validate_budget`, `confirm_before_order`, `default_meals`, `skip_weekends`, `avoid_repeat_days`, `history_window_days`, `allow_repeat_categories`, `allow_repeat_patterns`, `restrictions`, `avoid_allergens`, `preferred_cuisines`, `cuisines_to_avoid`, `foods_i_like`, `foods_to_avoid`, `order_drinks`, `avoid_sugary_drinks`, `preferred_drinks`.
+`budget`, `budget_mode`, `validate_budget`, `confirm_before_order`, `default_meals`, `skip_weekends`, `avoid_repeat_days`, `history_window_days`, `allow_repeat_categories`, `restrictions`, `avoid_allergens`, `preferred_cuisines`, `cuisines_to_avoid`, `foods_i_like`, `foods_to_avoid`, `order_drinks`, `avoid_sugary_drinks`, `preferred_drinks`.
 
 #### Defaults are sacred
 
@@ -537,7 +537,7 @@ python3 -c "
 import re
 with open('$HOME/Documents/WeBox/config.yaml') as f: text = f.read()
 allowed = {'budget','budget_mode','validate_budget','confirm_before_order','default_meals','skip_weekends',
-           'avoid_repeat_days','history_window_days','allow_repeat_categories','allow_repeat_patterns',
+           'avoid_repeat_days','history_window_days','allow_repeat_categories',
            'restrictions','avoid_allergens','preferred_cuisines','cuisines_to_avoid',
            'foods_i_like','foods_to_avoid','order_drinks','avoid_sugary_drinks','preferred_drinks'}
 keys = set(re.findall(r'^(\w+):', text, re.M))

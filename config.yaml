@@ -20,22 +20,22 @@ skip_weekends: true          # multi-day ranges skip Sat/Sun
 avoid_repeat_days: 7         # don't re-order the same MAIN within this many days
 history_window_days: 28      # how many days of order history to load into context
 
-# Fillers exempt from variety rules — these can repeat freely (5 milks, daily tea egg, etc.)
-allow_repeat_categories: [Drink, Side, Snack, Dairy & Eggs, Produce]
-allow_repeat_patterns:       # case-insensitive substring match on item name
-  - milk
-  - water
-  - tea egg
-  - sparkling
-  - coconut
-  - juice
+# Items whose `category` matches any of these are treated as fillers — they're
+# exempt from variety rules and may repeat freely (e.g., milk every day, water
+# bottles in bulk). Names below are actual WeBox category strings as returned
+# by the menu API. Add or remove as you like.
+allow_repeat_categories:
+  - Beverage    # bottled drinks, milk, water, juices, coconut water, etc.
+  - Appetizer   # tea eggs, dumplings sold per piece, etc.
+  - Snacks      # chips, cookies, fruit cups, etc.
+  - Salads      # side salads (drop this if you want salad variety enforced)
 
 # ────────── Diet & allergens ──────────
 restrictions: []             # vegetarian | vegan | gluten-free | halal | kosher | pescatarian
 avoid_allergens: []          # nuts | shellfish | dairy | eggs | soy | wheat | sesame
 
 # ────────── Cuisines ──────────
-preferred_cuisines: [Chinese, Japanese]
+preferred_cuisines: []       # empty = no bias; planner picks from the full menu
 cuisines_to_avoid: []
 
 # ────────── Food likes / avoids ──────────

@@ -14,7 +14,7 @@ description: Order food from WeBox autonomously via the WeBox API. Fetches the f
 ## Step 1: Load Local State
 
 ### 1a. Structured config (`config.yaml`)
-Parse the YAML. Extract: `budget`, `budget_mode`, `validate_budget`, `confirm_before_order`, `default_meals`, `skip_weekends`, `avoid_repeat_days` (default 7), `history_window_days` (default 28), `allow_repeat_categories`, `allow_repeat_patterns`, `restrictions`, `avoid_allergens`, `preferred_cuisines`, `cuisines_to_avoid`, `foods_i_like`, `foods_to_avoid`, `order_drinks`, `avoid_sugary_drinks`, `preferred_drinks`. These are **hard constraints** (the planner must respect them).
+Parse the YAML. Extract: `budget`, `budget_mode`, `validate_budget`, `confirm_before_order`, `default_meals`, `skip_weekends`, `avoid_repeat_days` (default 7), `history_window_days` (default 28), `allow_repeat_categories`, `restrictions`, `avoid_allergens`, `preferred_cuisines`, `cuisines_to_avoid`, `foods_i_like`, `foods_to_avoid`, `order_drinks`, `avoid_sugary_drinks`, `preferred_drinks`. These are **hard constraints** (the planner must respect them).
 
 ### 1a'. Free-form preferences (`preferences.md`)
 Read the markdown file. Treat any bullets / paragraphs the user has written as **soft constraints** (good intent to honor where possible). The structured fields in `config.yaml` always override `preferences.md` if there's a conflict.
@@ -146,7 +146,7 @@ Budget validation: `unit_price × qty`.
 
 3. **Variety (mains only):**
    - ONLY apply to mains (entrées, bowls, bento, noodles, hot pots).
-   - Items matching `allow_repeat_categories` (Drink, Side, Snack, Dairy & Eggs, Produce) or `allow_repeat_patterns` (milk, water, tea egg, etc.) are EXEMPT — they can repeat freely; ordering 5 of the same is fine.
+   - Items whose `category` is listed in `allow_repeat_categories` (e.g., Beverage, Appetizer, Snacks) are EXEMPT — they can repeat freely; ordering 5 of the same is fine.
    - For mains: avoid productIds in recent `orders/YYYY-Www.json` entries within `avoid_repeat_days`.
    - Cross-day variety in this session: don't pick the same main twice across consecutive days.
 
