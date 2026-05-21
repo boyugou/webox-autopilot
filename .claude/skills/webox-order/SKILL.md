@@ -59,19 +59,68 @@ Read `~/Documents/WeBox/preferences.md`. Extract:
 ### 1b. Item reviews
 Read `~/Documents/WeBox/item-reviews.md` if it exists. Used in Step 4 for selection bias.
 
-### 1c. Order history (slot occupancy + variety tracking)
-Read `~/Documents/WeBox/order-history.md`. Only load entries within `history_window_days` into context. This file serves two purposes:
-- **Slot occupancy:** which date+meal slots are already ordered (only `✅` blocks; `↩️ refunded` and `🚫 cancelled` are OPEN for re-ordering)
-- **Variety tracking:** what items were ordered recently (avoid repeating within `avoid_repeat_days`)
+### 1c. Order history (per-week JSON, slot occupancy + variety tracking)
 
-If `last_synced` is more than 1 day old → re-sync in Step 2 before proceeding.
-Malformed or missing → treat as empty and re-scrape.
+Order history lives in `~/Documents/WeBox/orders/` as **per-week JSON files**, one file per ISO week:
+- `~/Documents/WeBox/orders/2026-W21.json` (covers Mon 2026-05-18 through Sun 2026-05-24)
+- `~/Documents/WeBox/orders/2026-W22.json` (Mon 2026-05-25 through Sun 2026-05-31)
+- ...
+
+**Only load the week files that overlap your `history_window_days` window** — typically the last 4 weeks plus the current/next week. Don't load the entire directory.
+
+```javascript
+// Pseudocode: ISO week computation
+function isoWeek(date) { /* returns "2026-W21" */ }
+const weeksToLoad = lastNWeeks(history_window_days);  // e.g. ["2026-W18", ..., "2026-W22"]
+const orders = weeksToLoad.flatMap(w => readJSON(`~/Documents/WeBox/orders/${w}.json`)?.orders ?? []);
+```
+
+This file structure serves two purposes:
+- **Slot occupancy:** every entry blocks its slot (cancelled/refunded are filtered out at sync time, so anything that appears is treated as a real order)
+- **Variety tracking:** items in recent entries → avoid repeating within `avoid_repeat_days`
+
+If `synced_at` (in the latest week file or in a top-level `_meta.json`) is more than 1 day old → re-sync in Step 2.
+Malformed or missing files → treat as empty and re-scrape.
+
+### Per-week JSON schema
+
+```json
+{
+  "week": "2026-W21",
+  "week_starts": "2026-05-18",
+  "synced_at": "2026-05-21T14:30:00",
+  "orders": [
+    {
+      "date": "2026-05-18",
+      "day": "Mon",
+      "meal": "Lunch",
+      "orderId": "No.3258400",
+      "status": "active",            // active | planned (no cancelled/refunded ever written)
+      "total": 28.30,
+      "items": [
+        { "brand": "Xiangchuan Kitchen", "name": "Mongolian Beef Bento", "qty": 1, "price": 17.45 },
+        { "brand": "Northwest China Cuisine", "name": "Tea Egg", "qty": 2, "price": 2.45 }
+      ]
+    },
+    {
+      "date": "2026-05-22",
+      "day": "Thu",
+      "meal": "Lunch",
+      "status": "planned",
+      "total": 25.95,
+      "items": [ ... ]
+    }
+  ]
+}
+```
+
+**Cancelled / refunded orders are NOT written to these files** — they're treated as "never happened" so the slot stays openable. The WeBox order list page (`/order/list/normal`) remains the source of truth if the user wants to audit.
 
 ---
 
 ## Step 2: Sync Order History (if stale)
 
-*Skip if `order-history.md` was synced within the last day.*
+*Skip if the most recent week file in `~/Documents/WeBox/orders/` has `synced_at` within the last day.*
 
 Navigate to `https://www.webox.com/order/list/normal` and run:
 
@@ -100,18 +149,21 @@ Navigate to `https://www.webox.com/order/list/normal` and run:
     );
     const isActive = !orderStatus || !/refund|cancel/i.test(orderStatus);
     return { date: dateLine, meal, orderId, orderStatus: orderStatus || 'active', isActive, items: itemLines };
-  }).filter(o => o.date && o.meal);
+  }).filter(o => o.date && o.meal && o.isActive);  // FILTER cancelled/refunded out at the source
   return JSON.stringify(orders);
 })()
 ```
 
-Merge results into `~/Documents/WeBox/order-history.md`:
-- New active slots → `✅ #ORDERNUM`
-- Refunded → `↩️ refunded` (slot still OPEN for re-order)
-- Cancelled → `🚫 cancelled` (slot still OPEN)
-- Update `last_synced` line
+Merge each scraped order into the appropriate per-week file:
+1. Convert `"Mon 05/18"` to a full ISO date using the current year (or previous year if the date is in the future this year).
+2. Compute the ISO week (`2026-W21`).
+3. Read or create `~/Documents/WeBox/orders/<YYYY-Www>.json` (schema in Step 1c).
+4. Dedupe by `orderId` and merge new orders. Preserve any local `status: "planned"` entries.
+5. Update `synced_at` to the current timestamp on every touched week file.
 
-Skip any target date+meal currently marked `✅` (active).
+**Cancelled/refunded orders are filtered out at the scrape step** (`.filter(... && o.isActive)`) — they never get written. The slot stays openable for re-ordering. If the user wants to audit cancelled history, point them at `/order/list/normal`.
+
+Skip any target date+meal that has an entry in the loaded week files (since cancelled/refunded are filtered, anything present = real active order).
 
 ---
 
