@@ -239,11 +239,18 @@ const loggedIn = !!document.querySelector('a.cart.fr, [class*="user-avatar"], [c
 - BUT we've observed inconsistent results when scraping multiple tabs in parallel — some background scrapes may return partial item lists silently.
 - Safest contract: **scrape one tab at a time, in the foreground**. The wall-time cost is acceptable (~3-5s per scrape with smart-scroll).
 
-## Multi-window parallelism
+## Multi-window parallelism (not feasible)
 
-Claude in Chrome's MCP tools do NOT support programmatically opening new Chrome windows (only new tabs within the current group). Multi-window parallelism would require the USER to manually launch a second Chrome instance, which the skill cannot orchestrate.
+Claude in Chrome's MCP tools cannot programmatically open a second window of the same Chrome profile.
 
-This means parallel multi-tab scraping is the only available parallelism, and it's unreliable for lazy-loaded pages (see above). Stick with sequential scraping.
+Available tools and their limits:
+- `tabs_create_mcp` — creates a new TAB in the existing tab group (same window)
+- `tabs_context_mcp(createIfEmpty: true)` — creates a new window with a fresh tab group, but ONLY when there's no existing MCP group. Once one exists, this call is a no-op. So Claude is effectively single-windowed per session.
+- `list_connected_browsers` / `switch_browser` — these switch between separate Chrome instances (different processes / profiles, e.g. Chrome + Chrome Canary). They DO NOT share cookies or login state, so they don't help for "same user, multiple windows."
+
+Practical implication: parallel multi-tab in one window is the only parallelism available, and it's unreliable for lazy-loaded pages (see "Notes on background tab behavior" above). **Stick with sequential scraping for production paths.**
+
+If you genuinely need multi-window parallel automation, you'd need a headless-driver approach (Playwright / Puppeteer) — that's a different project, not within Claude in Chrome's scope.
 
 ---
 
