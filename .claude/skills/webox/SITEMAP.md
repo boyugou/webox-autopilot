@@ -249,7 +249,15 @@ Read whole file. Derive ID Sets for fast lookup: `new Set([...products.map(p=>p.
   ]
 }
 ```
-Order items intentionally **omit** `productSpecialId`, `portionId`, `price` — those live in the menu cache for Place Order body assembly, never consumed from order history.
+
+Order entries come in **two shapes** depending on origin:
+
+| Shape | Set by | Item fields | Purpose |
+|---|---|---|---|
+| **Active** | onboard Step 5, sync Step 3, order Step 1e | `{productId, name, brand, quantity}` | Already placed in WeBox; just records what was ordered for variety + display. `productSpecialId/portionId/price` are intentionally OMITTED (never consumed from history). |
+| **Planned** | order Step 5 (before POST) | `{productSpecialId, portionId, productId, quantity, name, brand, price, cutoffTime, shippingTimeSectionId, kitchenId}` plus top-level `"planned": true` | Local-only draft used to build the Place Order body in Step 6. After POST succeeds, the entry gets rewritten as the Active shape with the real `orderId`. |
+
+A week file can contain a mix of both. Sync/Step-1e merge preserves planned entries (keyed by `(date, meal)` with `"planned": true`) so they don't get wiped before the user actually places the order.
 
 ### `menu-cache/YYYY-MM-DD-Meal.json` (~1 MB — the big one)
 ```json

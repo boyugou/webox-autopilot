@@ -7,8 +7,10 @@ description: General WeBox knowledge loader for ad-hoc tasks. Loads the API + UR
 
 Invoked for ad-hoc WeBox tasks that don't map cleanly to one of the dedicated skills.
 
-> **CRITICAL — about `javascript_tool` return values:**
-> Tool-result truncation is REAL — at ~1000 characters / ~50 lines, your displayed AND model-context content is cut, with everything after `[TRUNCATED]` lost. **Never write to `~/Downloads/`** or use blob/download tricks. The reliable pattern is chunked retrieval: stash data on `window.__webox*`, slice back in deterministic chunks of 5 items per call with flat (no pretty-print) JSON.
+> **About `javascript_tool` return values:**
+> Tool-result truncation is REAL — at ~1000 characters / ~50 lines, your model-context (not just display) is cut. **Two retrieval paths:**
+> 1. **Download bypass (preferred):** JS triggers a `<a download>` Blob click → file lands in `~/Downloads/webox-*.json` → Bash `mv` to `~/Documents/WeBox/`. ONE JS call per file. Requires Chrome's "automatic downloads" permission for `[*.]webox.com` (one-time setup).
+> 2. **Chunked fallback:** if the file doesn't land in `~/Downloads`, stash data on `window.__webox*` and slice back in chunks of 5 items per call, flat JSON.
 
 ## Step 1: Load Knowledge
 

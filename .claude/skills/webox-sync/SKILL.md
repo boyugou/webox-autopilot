@@ -7,8 +7,10 @@ description: One-stop API sync — refresh order history, favorites, hidden list
 
 Refreshes all read-only state via API and shows the calendar.
 
-> **CRITICAL — about `javascript_tool` return values:**
-> Tool-result truncation is REAL — at ~1000 characters / ~50 lines, your displayed AND model-context content is cut, with everything after `[TRUNCATED]` lost. Verified empirically. **Never write to `~/Downloads/`** or use blob/download tricks. The reliable pattern is chunked retrieval: stash data on `window.__webox*`, slice it back in deterministic chunks of 5 items per call with **flat (no pretty-print) JSON**. Larger chunks silently drop data.
+> **About `javascript_tool` return values:**
+> Tool-result truncation is REAL — at ~1000 characters / ~50 lines, your model-context (not just display) is cut. **Two retrieval paths:**
+> 1. **Download bypass (preferred):** JS triggers a `<a download>` Blob click → file lands in `~/Downloads/webox-*.json` → Bash `mv` to `~/Documents/WeBox/`. ONE JS call per file. Requires Chrome's "automatic downloads" permission for `[*.]webox.com` (one-time setup).
+> 2. **Chunked fallback:** if the file doesn't land in `~/Downloads`, stash data on `window.__webox*` and slice back in chunks of 5 items per call, flat JSON.
 
 **Inputs:** existing `user-profile.json`, `address-info.json` in `~/Documents/WeBox/` (from `/webox-onboard`).
 **Outputs (refreshed):**
@@ -179,6 +181,11 @@ Same accumulate-on-page + return-summary pattern as webox-onboard Step 5. Stash 
 
 ```javascript
 (async () => {
+  const addrId = /* from address-info.json */;
+  const today = new Date().toISOString().slice(0, 10);
+  // Parallel-fetch the current menu — used to enrich order items with name+brand.
+  // Old products no longer in the menu won't resolve (name stays null) — that's fine.
+  const menuPromise = fetch(`/api/productSpecials/v8/address/${addrId}/date/${today}`, { credentials: 'include' }).then(r => r.json());
   const params = 'client=web&status=Paid%2CPartialRefunded%2CPlanned%2CUnpaid%2CRefunded%2CCancelled%2COnHold&pageSize=10&type=Individual&orderBy=id&desc=true&referenceTypes=GROUP_ORDER_META';
   const all = [];
   let pageIndex = 1;
@@ -190,6 +197,9 @@ Same accumulate-on-page + return-summary pattern as webox-onboard Step 5. Stash 
     if (all.length >= j.data.totalCount) break;
     pageIndex++;
   }
+  const menuR = await menuPromise;
+  const productById = new Map((menuR.data?.products || []).map(p => [p.id, p]));
+  const brandById   = new Map((menuR.data?.productBrands || []).map(b => [b.id, b]));
   // Also derive shipping-windows from package's extShippingTimeSection
   const shippingWindows = {};
   // Filter to active + flatten by package

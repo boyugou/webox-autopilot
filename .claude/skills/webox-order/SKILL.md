@@ -112,11 +112,23 @@ Then **merge into the appropriate per-week file** with proper Cancelled/Refunded
 ```bash
 # Paste the JS-returned 'all' array as a Python literal:
 uv run --no-project python3 << 'EOF'
-import json, os, datetime
+import json, os, datetime, glob
 RECENT = $ALL_JSON  # the 'all' array from the JS above
 DEAD_STATUSES = {'Refunded', 'Cancelled'}
 out_dir = os.path.expanduser("~/Documents/WeBox/orders")
 os.makedirs(out_dir, exist_ok=True)
+
+# Build a productId → {name, brand} lookup from whatever menu caches we already have on disk.
+# We don't fetch the menu API here (Step 1e is fast — ~300ms). If a productId isn't found in
+# any local menu cache, we leave name/brand as null (still queryable by productId).
+product_lookup = {}
+for f in glob.glob(os.path.expanduser("~/Documents/WeBox/menu-cache/*.json")):
+    try:
+        for it in json.load(open(f)).get("items", []):
+            product_lookup.setdefault(it["productId"], {"name": it.get("name"), "brand": it.get("brand")})
+    except Exception: pass
+def enrich(items):
+    return [{**i, **product_lookup.get(i["productId"], {"name": None, "brand": None})} for i in items]
 
 # Bucket fetched orders by week and into upsert/evict sets
 upserts_by_week, dead_orderIds = {}, set()
@@ -129,11 +141,10 @@ for o in RECENT:
         upserts_by_week.setdefault(week_key, []).append({
             "date": d.isoformat(), "day": d.strftime("%a"),
             "meal": o["timeShipping"], "orderId": o["orderId"],
-            "status": o["status"], "total": o["total"], "items": o["items"]
+            "status": o["status"], "total": o["total"], "items": enrich(o["items"])
         })
 
 # All weeks that need rewriting: upsert weeks PLUS any weeks containing dead orderIds
-import glob
 affected_weeks = set(upserts_by_week.keys())
 for path in glob.glob(f"{out_dir}/*.json"):
     try:

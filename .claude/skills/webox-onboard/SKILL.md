@@ -152,10 +152,19 @@ The full order history for a long-time user can be 400+ orders × multiple items
 
 ```javascript
 (async () => {
+  const addrId = /* from address-info.json */;
+  const today = new Date().toISOString().slice(0, 10);
+  // Fetch the current menu in parallel with the first orders page — gives us productById/brandById
+  // Maps so we can enrich each order's items with name+brand. Old products that have rotated out
+  // of the menu won't resolve, and we leave their name as null (still queryable by productId).
+  const menuFetch = fetch(`/api/productSpecials/v8/address/${addrId}/date/${today}`, { credentials: 'include' }).then(r => r.json());
   const params = 'client=web&status=Paid%2CPartialRefunded%2CPlanned%2CUnpaid%2CRefunded%2CCancelled%2COnHold&pageSize=10&type=Individual&orderBy=id&desc=true&referenceTypes=GROUP_ORDER_META';
   const active = [];
   const shippingWindows = {};
   let pageIndex = 1, totalCount = 0;
+  const menuR = await menuFetch;
+  const productById = new Map((menuR.data?.products || []).map(p => [p.id, p]));
+  const brandById   = new Map((menuR.data?.productBrands || []).map(b => [b.id, b]));
   while (pageIndex <= 100) {
     const r = await fetch(`/api/orders/list?${params}&pageIndex=${pageIndex}`, { credentials: 'include' });
     const j = await r.json();
