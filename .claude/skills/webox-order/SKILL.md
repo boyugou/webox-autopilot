@@ -75,7 +75,7 @@ Navigate to `https://www.webox.com/order/list/normal`. The page uses infinite sc
 
 ```javascript
 (async () => {
-  // Smart scroll: stop early when no new items load. Faster + more robust than fixed N scrolls.
+  // Smart scroll: stop early when no new items load.
   let lastCount = 0, stable = 0;
   for (let i = 0; i < 10; i++) {
     window.scrollTo(0, document.body.scrollHeight);
@@ -85,19 +85,28 @@ Navigate to `https://www.webox.com/order/list/normal`. The page uses infinite sc
     lastCount = cnt;
   }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
+    // Structured selectors (preferred)
+    const orderId = o.querySelector('.order-id')?.innerText?.trim();       // "No.3258614"
+    const orderStatus = o.querySelector('.order-status')?.innerText?.trim(); // "Refunded" | "Cancelled" | absent (= active)
+    // Date and meal aren't in dedicated selectors; extract from text
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
-    const mealLine = lines.find(l => /Lunch|Dinner|HappyHour|Breakfast/.test(l));
-    const orderNum = lines.find(l => /^#\d+/.test(l) || /Order\s*#\d+/i.test(l));
+    const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)$/.test(l));
+    // Item lines: skip metadata / descriptions / prices / refund flags
     const itemLines = lines.filter(l =>
-      l !== dateLine && l !== mealLine && l !== orderNum &&
-      l.length > 3 && !/^\$/.test(l) && !/^(Cancel|View|Reorder|Track)/i.test(l)
+      l !== dateLine && l !== mealLine && l !== orderId && l !== orderStatus &&
+      !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|No\.\d)/i.test(l) &&
+      !/^\$/.test(l) && l.length > 3
     );
-    return { date: dateLine, meal: mealLine, orderNum: orderNum || null, items: itemLines };
+    // active = the slot is taken; refunded/cancelled slots are open for re-ordering
+    const isActive = !orderStatus || !/refund|cancel/i.test(orderStatus);
+    return { date: dateLine, meal: mealLine, orderId, orderStatus: orderStatus || 'active', isActive, items: itemLines };
   }).filter(o => o.date && o.meal);
   return JSON.stringify(orders);
 })()
 ```
+
+**Slot-occupancy rule:** Only orders with `isActive: true` block their slot. A slot with a `Refunded` or `Cancelled` order is treated as **open** — the user can re-order it.
 
 Merge into `~/Documents/WeBox/order-history.md`:
 - Add new ordered slots (don't overwrite existing entries — local data may have more detail than the scrape)
@@ -222,12 +231,42 @@ Practical limit: 3–5 concurrent tabs. Cuts total scraping time roughly N×.
 
 ### What to Scrape — Decision Tree
 
-1. **Favorites first** (use cache if fresh; scrape if stale/missing). Covers all meal slots for that date.
-2. **If favorites returns 0 items** (or very few given budget): fall back to category pages.
+1. **Menu cache hit?** Check `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json` first. If it exists and is < 60 minutes old, use it — no scraping needed. This makes **replan** instant: after ordering, if the user says "actually I don't like that, replan with something else", you have the full menu already cached.
+
+2. **Favorites first** (use favorites-cache if fresh; scrape if stale). Covers all meal slots for that date.
+
+3. **If favorites returns 0 items** (or insufficient given budget): fall back to category pages.
    - Use `category_mode` + `category_list` to pick which categories.
    - Always include `preferred_cuisines`.
    - Skip anything in `cuisines_to_avoid`.
-3. **If user prompt requests specific cuisine** (e.g., "I want Thai today"): scrape that category directly regardless of preferences filter.
+
+4. **If user prompt requests specific cuisine** ("I want Thai today"): the cuisine constraint applies to the **main dish only**. Fillers (drinks, sides, fruit, eggs, milk) come from any category and are used to fill the budget.
+   - Scrape the requested cuisine for the main.
+   - Also scrape filler-eligible categories (Drink, Side, Snack, Dairy & Eggs, Produce) for budget-filling.
+   - Don't restrict fillers to match the main's cuisine — Chinese tea + Thai curry + general fruit is a fine plan.
+
+5. **After scraping (any mode)**: **deduplicate** by `(brand, name)` key — the same dish can appear in multiple categories (e.g., a Chinese snack shows in both `Chinese` and `Snack`). Keep one copy per (brand, name), but record all source categories in the cached item's `categories` array.
+
+6. **Cache the result** to `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
+   ```json
+   {
+     "cached_at": "2026-05-20T21:30:00",
+     "date": "2026-05-21",
+     "meal": "Lunch",
+     "sources": ["favorites", "Chinese", "Drink"],
+     "items": [
+       {"brand": "...", "name": "...", "price": 17.45, "rating": 4.5, "categories": ["favorites", "Chinese"]}
+     ]
+   }
+   ```
+   `categories` records which sources surfaced the item (for debugging / explanation). The menu-cache directory should be created if it doesn't exist.
+
+### Menu Cache Hygiene
+
+- TTL: 60 minutes (menus can change as items sell out)
+- Auto-prune: when loading, drop cache files older than 24 hours
+- The cache is per-slot; multiple cached slots can coexist
+- If the user explicitly says "re-scrape" or "refresh menu", ignore the cache and re-fetch
 
 ---
 

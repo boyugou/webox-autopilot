@@ -21,8 +21,7 @@ Navigate to `https://www.webox.com/order/list/normal`. Scroll 5–10 times to lo
 
 ```javascript
 (async () => {
-  // Smart scroll with early termination. Increase max from 10 to 30 if user said "pull all my history".
-  const maxScrolls = 10;
+  const maxScrolls = 10;  // bump to 30+ if user said "pull all my history"
   let lastCount = 0, stable = 0;
   for (let i = 0; i < maxScrolls; i++) {
     window.scrollTo(0, document.body.scrollHeight);
@@ -32,15 +31,18 @@ Navigate to `https://www.webox.com/order/list/normal`. Scroll 5–10 times to lo
     lastCount = cnt;
   }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
+    const orderId = o.querySelector('.order-id')?.innerText?.trim();
+    const orderStatus = o.querySelector('.order-status')?.innerText?.trim();
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
-    const mealLine = lines.find(l => /Lunch|Dinner|HappyHour|Breakfast/.test(l));
-    const orderNum = lines.find(l => /^#\d+/.test(l) || /Order\s*#\d+/i.test(l));
+    const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)$/.test(l));
     const itemLines = lines.filter(l =>
-      l !== dateLine && l !== mealLine && l !== orderNum &&
-      l.length > 3 && !/^\$/.test(l) && !/^(Cancel|View|Reorder|Track)/i.test(l)
+      l !== dateLine && l !== mealLine && l !== orderId && l !== orderStatus &&
+      !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|No\.\d)/i.test(l) &&
+      !/^\$/.test(l) && l.length > 3
     );
-    return { date: dateLine, meal: mealLine, orderNum: orderNum || null, items: itemLines };
+    const isActive = !orderStatus || !/refund|cancel/i.test(orderStatus);
+    return { date: dateLine, meal: mealLine, orderId, orderStatus: orderStatus || 'active', isActive, items: itemLines };
   }).filter(o => o.date && o.meal);
   return JSON.stringify(orders);
 })()
@@ -88,11 +90,14 @@ last_synced: YYYY-MM-DD
 ```
 
 Status icons:
-- `✅` ordered (with order number, total optional)
+- `✅` ordered, active (with order number, total optional)
 - `📝` planned (not yet placed — managed by `webox-order`)
 - `⏰` cutoff passed
-- `🚫` skipped / not ordered
+- `↩️` refunded — slot is OPEN, can be re-ordered
+- `🚫` cancelled or skipped — slot is OPEN for refunded/cancelled, otherwise marked not-ordered
 - `🔒` outside 7-day window
+
+**Important:** Only `✅` blocks a slot from re-ordering. `↩️` (refunded) and `🚫 cancelled` slots are open. Display them in the calendar with their order number for reference but show the slot as available.
 
 ## Step 3: Display the Active Window
 

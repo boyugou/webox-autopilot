@@ -94,7 +94,7 @@ Navigate to `https://www.webox.com/order/list/normal` (use a fresh tab so the ma
 
 ```javascript
 (async () => {
-  // Smart scroll with early termination. Up to 20 scrolls for first-run (deepest history possible).
+  // Smart scroll: up to 20 scrolls for first-run with early termination.
   let lastCount = 0, stable = 0;
   for (let i = 0; i < 20; i++) {
     window.scrollTo(0, document.body.scrollHeight);
@@ -104,21 +104,24 @@ Navigate to `https://www.webox.com/order/list/normal` (use a fresh tab so the ma
     lastCount = cnt;
   }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
+    const orderId = o.querySelector('.order-id')?.innerText?.trim();       // "No.3258614"
+    const orderStatus = o.querySelector('.order-status')?.innerText?.trim(); // "Refunded" | "Cancelled" | absent
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
-    const mealLine = lines.find(l => /Lunch|Dinner|HappyHour|Breakfast/.test(l));
-    const orderNum = lines.find(l => /^#\d+/.test(l) || /Order\s*#\d+/i.test(l));
+    const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)$/.test(l));
     const itemLines = lines.filter(l =>
-      l !== dateLine && l !== mealLine && l !== orderNum &&
-      l.length > 3 && !/^\$/.test(l) && !/^(Cancel|View|Reorder|Track)/i.test(l)
+      l !== dateLine && l !== mealLine && l !== orderId && l !== orderStatus &&
+      !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|No\.\d)/i.test(l) &&
+      !/^\$/.test(l) && l.length > 3
     );
-    return { date: dateLine, meal: mealLine, orderNum: orderNum || null, items: itemLines };
+    const isActive = !orderStatus || !/refund|cancel/i.test(orderStatus);
+    return { date: dateLine, meal: mealLine, orderId, orderStatus: orderStatus || 'active', isActive, items: itemLines };
   }).filter(o => o.date && o.meal);
   return JSON.stringify(orders);
 })()
 ```
 
-If the scrape returns `[]` (new user, zero orders) → write an empty `order-history.md` placeholder in Step 5b.
+Note: only `isActive: true` entries should be written as `✅ ordered` in `order-history.md`. Refunded/cancelled entries should be marked `🚫 refunded` or `🚫 cancelled` so the slot stays openable. If the scrape returns `[]` (zero orders), write a placeholder.
 
 #### 4b. Scrape favorites
 
