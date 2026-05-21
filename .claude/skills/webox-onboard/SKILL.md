@@ -177,6 +177,7 @@ This step does two things from the same fetch:
         shippingWindows[ts] = {
           shippingTimeSectionId: pkg.shippingTimeSectionId,
           extFormCutoff: ext.extFormCutoff,
+          daysBefore: ext.daysBefore || 0,
           extFormShippingBegin: ext.extFormShippingBegin,
           extFormShippingEnd: ext.extFormShippingEnd,
           cutoff_local_ms: ext.cutoff,        // ms-from-local-midnight (e.g., 28800000 = 08:00 local)
@@ -333,14 +334,13 @@ This step does three things in one menu fetch:
   // Build warm menu cache (using the same products + brands maps)
   const favIds = new Set(favR.data?.productIdList || []);
   const hideIds = new Set(hideR.data?.productIdList || []);
-  let kitchenId = null, shippingTimeSectionId = null;
+  let kitchenId = null;
   const menuItems = lunchSpecials
     .filter(s => s.stockStatus !== 'outofstock')
     .map(s => {
       const p = productById.get(s.productId);
       if (!p || hideIds.has(p.id)) return null;
       kitchenId = kitchenId || s.kitchenId;
-      shippingTimeSectionId = shippingTimeSectionId || s.shippingTimeSectionId;
       const portion = (p.extPortions || []).find(x => x.isDefault) || (p.extPortions || [])[0];
       return {
         name: p.extName?.enUs,
@@ -390,7 +390,6 @@ Write three files:
   "date": "<TOMORROW>",
   "meal": "Lunch",
   "kitchenId": 12838,
-  "shippingTimeSectionId": 27274,
   "items": [ ... ]
 }
 ```

@@ -267,11 +267,17 @@ For each slot in the plan, call `POST /api/orders` with the body assembled from:
 (async (slot, profile, address, shippingWindows) => {
   const win = shippingWindows.windows[slot.meal];
   if (!win) throw new Error(`No shipping window for ${slot.meal} — derive from past orders first or use DOM fallback.`);
-  // dateShipping = UTC midnight of the shipping date (WeBox's canonical form)
+  // dateShipping = UTC midnight of the shipping date (WeBox's canonical form). Explicit 'Z' matters.
   const dateShipping = new Date(slot.date + 'T00:00:00Z').getTime();
-  // cutoffTime = LOCAL extFormCutoff time on the shipping date, as ms since epoch.
-  // We rely on the browser's local timezone matching the user's WeBox timezone (it should).
-  const cutoffTime = new Date(slot.date + 'T' + win.extFormCutoff + ':00').getTime();
+  // cutoffTime = LOCAL extFormCutoff time on (shipping date - daysBefore), as ms since epoch.
+  // Uses browser local timezone — assumes browser tz matches user's WeBox tz.
+  // Empirically verified against intercepted Place Order body: matches exactly.
+  const [yy, mm, dd] = slot.date.split('-').map(Number);
+  const cutDate = new Date(yy, mm - 1, dd - (win.daysBefore || 0));
+  const cyyyy = cutDate.getFullYear();
+  const cmm = String(cutDate.getMonth() + 1).padStart(2, '0');
+  const cdd = String(cutDate.getDate()).padStart(2, '0');
+  const cutoffTime = new Date(`${cyyyy}-${cmm}-${cdd}T${win.extFormCutoff}:00`).getTime();
   const body = {
     order: {
       firstName: profile.firstName,

@@ -117,6 +117,7 @@ Then write the new enriched objects to `favorites.json` and `hidden.json`.
         shippingWindows[ts] = {
           shippingTimeSectionId: pkg.shippingTimeSectionId,
           extFormCutoff: ext.extFormCutoff,
+          daysBefore: ext.daysBefore || 0,
           extFormShippingBegin: ext.extFormShippingBegin,
           extFormShippingEnd: ext.extFormShippingEnd,
           cutoff_local_ms: ext.cutoff,
@@ -217,14 +218,13 @@ Identify the next 1–2 orderable Lunch slots (and corresponding Dinners if with
   const brandById = new Map(productBrands.map(b => [b.id, b]));
   const favIds = new Set(/* favorites.json: products.map(p => p.id).concat(unresolvedProductIds) */);
   const hideIds = new Set(/* hidden.json: products.map(p => p.id).concat(unresolvedProductIds) */);
-  let kitchenId = null, shippingTimeSectionId = null;
+  let kitchenId = null;
   const items = specials
     .filter(s => s.stockStatus !== 'outofstock')
     .map(s => {
       const p = productById.get(s.productId);
       if (!p || hideIds.has(p.id)) return null;
       kitchenId = kitchenId || s.kitchenId;
-      shippingTimeSectionId = shippingTimeSectionId || s.shippingTimeSectionId;
       const portion = (p.extPortions || []).find(x => x.isDefault) || (p.extPortions || [])[0];
       return {
         name: p.extName?.enUs,
@@ -243,7 +243,7 @@ Identify the next 1–2 orderable Lunch slots (and corresponding Dinners if with
       };
     })
     .filter(Boolean);
-  return JSON.stringify({ date, meal, kitchenId, shippingTimeSectionId, items });
+  return JSON.stringify({ date, meal, kitchenId, items });
 })('2026-05-22', 'Lunch')
 ```
 
@@ -254,7 +254,6 @@ Write each to `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`:
   "date": "2026-05-22",
   "meal": "Lunch",
   "kitchenId": 12838,
-  "shippingTimeSectionId": 27274,
   "items": [ ... ]
 }
 ```
