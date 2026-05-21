@@ -210,20 +210,75 @@ The full order history for a long-time user can be 400+ orders × multiple items
 })()
 ```
 
-**Then write `shipping-windows.json` immediately** (it's small — just two-three meal entries).
+**Then write `shipping-windows.json` immediately** (it's small — just two-three meal entries — no download needed; use Write tool directly).
 
-**Then paginate `window.__weboxOrders` back in chunks of 3** to build the per-week files. Run this JS as many times as needed:
+**Then retrieve the full orders list — preferred path: download bypass (one JS call + one Bash mv).** This needs Chrome's automatic-downloads permission to be granted for `[*.]webox.com` (see "First-run permission" earlier in this skill).
 
 ```javascript
-// Return chunk by offset; agent loops offset += 3 until empty
 (async () => {
-  const offset = /* agent passes 0, 50, 100, ... */;
-  const chunk = (window.__weboxOrders || []).slice(offset, offset + 3);
-  return JSON.stringify({ offset, count: chunk.length, orders: chunk });
+  const orders = window.__weboxOrders || [];
+  const json = JSON.stringify({ count: orders.length, orders }, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `webox-orders-${Date.now()}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  return JSON.stringify({ downloadedAs: a.download, bytes: json.length, count: orders.length });
 })()
 ```
 
-For a user with 400 active orders that's ~135 small (~800-byte each) round trips, each easily within tool limits. Process each chunk into per-week JSON before the next call.
+Bash:
+```bash
+sleep 1.5
+F="$HOME/Downloads/<downloadedAs from JS>"
+if [ -f "$F" ]; then
+  # Read all orders at once; group by ISO week; write per-week files.
+  uv run --no-project python3 << 'EOF'
+import json, os, datetime
+src = json.load(open(os.path.expanduser("$F")))
+weeks = {}
+for o in src["orders"]:
+    d = datetime.datetime.fromtimestamp(o["dateShippingMs"] / 1000, tz=datetime.timezone.utc).date()
+    iy, iw, _ = d.isocalendar()
+    key = f"{iy}-W{iw:02d}"
+    weeks.setdefault(key, []).append({
+        "date": d.isoformat(),
+        "day": d.strftime("%a"),
+        "meal": o["timeShipping"],
+        "orderId": o["orderId"],
+        "total": o["total"],
+        "items": o["items"],
+    })
+out_dir = os.path.expanduser("~/Documents/WeBox/orders")
+os.makedirs(out_dir, exist_ok=True)
+for week, entries in weeks.items():
+    week_start = datetime.date.fromisocalendar(int(week[:4]), int(week[6:]), 1).isoformat()
+    with open(f"{out_dir}/{week}.json", "w") as fp:
+        json.dump({"week": week, "week_starts": week_start,
+                   "synced_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   "orders": entries}, fp, indent=2)
+print(f"✓ wrote {len(weeks)} per-week files, {sum(len(v) for v in weeks.values())} orders total")
+EOF
+  rm "$F"
+else
+  echo "Download didn't land — falling back to chunked retrieval."
+  # See "fallback" below
+fi
+```
+
+**Fallback (when download bypass fails — permission not granted):**
+
+```javascript
+// Loop offset = 0, 3, 6, ... until count: 0
+(async (offset) => {
+  const chunk = (window.__weboxOrders || []).slice(offset, offset + 3);
+  return JSON.stringify({ offset, count: chunk.length, orders: chunk });
+})(/* offset */)
+```
+
+For a user with 400 active orders that's ~135 small round-trips. Process each chunk into per-week JSON in your own state, then write at the end. Much slower (~3 minutes) but always works.
 
 **Write `~/Documents/WeBox/shipping-windows.json`** with the `shippingWindows` field:
 ```json

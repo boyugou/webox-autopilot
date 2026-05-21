@@ -327,6 +327,28 @@ git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot &&
 
 `~/Documents/WeBox/` is never touched by updates. For a clean-slate wipe + reinstall, see the **Full reinstall** one-liner up in the [Quick Install](#quick-install) section.
 
+### What to do when a new version ships
+
+For most version bumps:
+
+1. Run the update one-liner above. Skill files at `~/.claude/skills/webox-*/` get overwritten in place.
+2. **Restart Claude Code** so the new skill files are loaded. (Claude Code reads skills at session start — running skills in an existing session continue with the old version.)
+3. Continue using normally. Your `~/Documents/WeBox/` data (preferences, history, identity caches, reviews) is preserved and stays valid.
+
+For version bumps that change the local file schema (rare, but happens when a new field is added or a file format changes), the release notes / commit message will say so explicitly. In that case:
+
+1. Back up your reviews and notes if you want to keep them:
+   ```bash
+   cp ~/Documents/WeBox/item-reviews.md ~/Documents/WeBox/item-reviews.md.bak
+   cp ~/Documents/WeBox/preferences.md  ~/Documents/WeBox/preferences.md.bak
+   cp ~/Documents/WeBox/config.yaml     ~/Documents/WeBox/config.yaml.bak
+   ```
+2. Run the **Full reinstall** one-liner (top of README) to wipe + reinstall.
+3. Run `/webox-onboard` — it rebuilds the identity caches and history from the WeBox API (your WeBox account is the source of truth and is never touched).
+4. Restore your reviews/notes from the `.bak` files manually, merging any newly-asked-for fields from the fresh config.yaml template.
+
+The Chrome "automatic downloads" permission you set up under [Requirements](#requirements) is **persistent across reinstalls and version updates** — you only have to grant it once.
+
 ## Contributing
 
 PRs welcome. Areas for improvement:
