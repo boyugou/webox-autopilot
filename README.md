@@ -215,7 +215,7 @@ User prompt
 
 ### First session (after `/webox-onboard`)
 - 1 question asked (preferences in natural language)
-- Order history scraped (with 10× scroll for max coverage)
+- Order history scraped (smart scroll, stops when no new items load)
 - Favorites scraped (~60s, hidden behind your typing time)
 - All files created in `~/Documents/WeBox/`
 
@@ -231,9 +231,9 @@ User prompt
 | Step | Method | Reliability |
 |------|--------|-------------|
 | Favorites (cached) | Read local file | instant |
-| Favorites (scrape) | JS + scroll 10× | ✅ 100% |
+| Favorites (scrape) | JS + smart scroll (stops on no new items) | ✅ 100% |
 | Order history (cached) | Read local file | instant |
-| Order history (scrape) | JS + scroll 5–10× | ✅ 100% |
+| Order history (scrape) | JS + smart scroll | ✅ 100% |
 | Multi-date scraping | Parallel tabs (3–5 concurrent) | ✅ ~Nx speedup |
 | Budget validation | Python `sum(p × q)` via `uv run` | ✅ 100% |
 | Add item (no options) | JS click `.btn.plus-add` | ✅ 100% |

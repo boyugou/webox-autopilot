@@ -51,7 +51,7 @@ A user is considered **already onboarded** if **both** of these are true:
 - `~/Documents/WeBox/preferences.md` exists, AND
 - `~/Documents/WeBox/order-history.md` exists
 
-(The preferences file alone is not enough — `install.sh` may have copied a default template without the user having gone through onboarding.)
+Both files together confirm onboarding actually ran (a stray preferences file alone — manually copied or left from a prior partial setup — wouldn't indicate that history was synced).
 
 **If already onboarded:**
 
@@ -90,13 +90,18 @@ In the same turn, kick off these tool calls. The user reads the question and sta
 
 #### 4a. Scrape order history
 
-Navigate to `https://www.webox.com/order/list/normal` (use a fresh tab so the main tab stays available). The page uses infinite scroll — scroll 10 times for first-run to capture as much history as possible:
+Navigate to `https://www.webox.com/order/list/normal` (use a fresh tab so the main tab stays available). The page uses infinite scroll — smart-scroll up to 20 times for first-run (stops early when no new items load):
 
 ```javascript
 (async () => {
-  for (let i = 0; i < 10; i++) {
+  // Smart scroll with early termination. Up to 20 scrolls for first-run (deepest history possible).
+  let lastCount = 0, stable = 0;
+  for (let i = 0; i < 20; i++) {
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 800));
+    await new Promise(r => setTimeout(r, 700));
+    const cnt = document.querySelectorAll('.order-item').length;
+    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
+    lastCount = cnt;
   }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
@@ -124,11 +129,15 @@ https://www.webox.com/menu/section/My%20Favorites?date=<TODAY_YYYY-MM-DD>&shippi
 
 ```javascript
 (async () => {
-  for (let i = 0; i < 10; i++) {
+  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
+  let lastCount = 0, stable = 0;
+  for (let i = 0; i < 15; i++) {
     window.scrollTo(0, document.body.scrollHeight);
     await new Promise(r => setTimeout(r, 600));
+    const cnt = document.querySelectorAll(SELECTORS).length;
+    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
+    lastCount = cnt;
   }
-  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
   return [...document.querySelectorAll(SELECTORS)].map(item => {
     const wrapper = item.querySelector('.product-item-content-wrapper');
     const brand = wrapper?.querySelector('.brand-wrapper')?.innerText?.trim();
@@ -153,120 +162,19 @@ When the user responds to the onboarding question:
 
 ### 5a. Parse and write preferences
 
-Map the user's natural-language reply to the YAML fields below. Leave defaults for anything not mentioned. Put any free-text observations into the `Notes` section at the bottom.
+The canonical preferences template is `preferences.md` in the webox-autopilot repo root — read it (or load the cached copy from the repo clone) and write that exact content to `~/Documents/WeBox/preferences.md`, replacing the YAML values with whatever the user actually said in their onboarding reply.
 
-Write `~/Documents/WeBox/preferences.md`:
+If the user did not mention a field, keep the template's default. Put any free-text observations that don't map to a field into the `## Notes` section at the bottom (preserving the template's helper comment above it).
 
-```markdown
-# WeBox Preferences
+The template includes inline comments explaining each option (e.g., `# spend-up-to | ceiling-only`, the full list of available categories). Preserve these — the file is meant to be human-editable in Finder.
 
-This file lives in ~/Documents/WeBox/ — open it in any editor to change your settings.
-Claude reads it at the start of every order session.
-
----
-
-## Budget
-
-```yaml
-budget: 30.00
-budget_mode: spend-up-to   # spend-up-to | ceiling-only
-validate_budget: false
-```
-
-## Ordering Behavior
-
-```yaml
-confirm_before_order: false
-default_meals:
-  - Lunch
-  - Dinner
-skip_weekends: true
-```
-
-## Variety
-
-```yaml
-avoid_repeat_days: 7
-history_window_days: 28
-
-allow_repeat_categories:
-  - Drink
-  - Side
-  - Snack
-  - Dairy & Eggs
-  - Produce
-
-allow_repeat_patterns:
-  - milk
-  - water
-  - tea egg
-  - sparkling
-  - coconut
-  - juice
-  - yogurt
-```
-
-## Category Scraping
-
-```yaml
-category_mode: blacklist
-category_list:
-  - Dessert
-  - Burger
-  - Pizza
-```
-
-## Dietary Restrictions
-
-```yaml
-restrictions:
-  - none
-```
-
-## Allergens
-
-```yaml
-avoid_allergens:
-  - none
-```
-
-## Cuisine Preferences
-
-```yaml
-preferred_cuisines:
-  - Chinese
-  - Japanese
-
-cuisines_to_avoid:
-  - none
-```
-
-## Food Preferences
-
-```yaml
-foods_i_like:
-  - none
-
-foods_to_avoid:
-  - none
-```
-
-## Drinks
-
-```yaml
-order_drinks: true
-avoid_sugary_drinks: false
-preferred_drinks:
-  - water
-  - unsweetened tea
-```
-
-## Notes
-
-(free text from the user's onboarding reply that didn't fit a structured field)
-```
-
-Adjust YAML values to match what the user actually said.
+Example mappings:
+- "vegetarian" → `restrictions: [vegetarian]`
+- "budget around 25" → `budget: 25.00`
+- "ask me first" → `confirm_before_order: true`
+- "love spicy Thai food" → `preferred_cuisines: [Thai, ...]` + add a `foods_i_like` entry
+- "no dairy" → `avoid_allergens: [dairy]`
+- "5 milks a week" → leave defaults; note in `## Notes`
 
 ### 5b. Write order-history.md from scraped data
 

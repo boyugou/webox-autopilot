@@ -21,9 +21,15 @@ Navigate to `https://www.webox.com/order/list/normal`. Scroll 5–10 times to lo
 
 ```javascript
 (async () => {
-  for (let i = 0; i < 5; i++) {
+  // Smart scroll with early termination. Increase max from 10 to 30 if user said "pull all my history".
+  const maxScrolls = 10;
+  let lastCount = 0, stable = 0;
+  for (let i = 0; i < maxScrolls; i++) {
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 800));
+    await new Promise(r => setTimeout(r, 700));
+    const cnt = document.querySelectorAll('.order-item').length;
+    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
+    lastCount = cnt;
   }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
@@ -40,7 +46,7 @@ Navigate to `https://www.webox.com/order/list/normal`. Scroll 5–10 times to lo
 })()
 ```
 
-If the user asks to "sync everything" or "pull all my history", scroll 20+ times to load deeper history.
+If the user asks to "sync everything" or "pull all my history", change `maxScrolls` to 30+ to load deeper history.
 
 ## Step 2: Merge into order-history.md
 

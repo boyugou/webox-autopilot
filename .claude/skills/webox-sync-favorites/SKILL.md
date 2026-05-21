@@ -28,12 +28,16 @@ Navigate to `https://www.webox.com/menu/section/My%20Favorites?date=TODAY&shippi
 
 ```javascript
 (async () => {
-  // Scroll to trigger all lazy-loaded items
-  for (let i = 0; i < 10; i++) {
+  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
+  // Smart scroll: stops early when no new items load
+  let lastCount = 0, stable = 0;
+  for (let i = 0; i < 15; i++) {
     window.scrollTo(0, document.body.scrollHeight);
     await new Promise(r => setTimeout(r, 600));
+    const cnt = document.querySelectorAll(SELECTORS).length;
+    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
+    lastCount = cnt;
   }
-  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
   return [...document.querySelectorAll(SELECTORS)].map(item => {
     const wrapper = item.querySelector('.product-item-content-wrapper');
     const brand = wrapper?.querySelector('.brand-wrapper')?.innerText?.trim();

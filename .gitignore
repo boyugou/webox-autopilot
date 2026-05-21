@@ -19,8 +19,6 @@ preferences.local.md
 favorites-cache.md
 order-history.md
 order-history-cache.json
-order-calendar.md         # legacy name — kept here so old files don't get committed
-plan-cache.md             # legacy name — kept here so old files don't get committed
 item-reviews.md
 items-with-options.md
 

@@ -75,16 +75,20 @@ Navigate to `https://www.webox.com/order/list/normal`. The page uses infinite sc
 
 ```javascript
 (async () => {
-  for (let i = 0; i < 5; i++) {
+  // Smart scroll: stop early when no new items load. Faster + more robust than fixed N scrolls.
+  let lastCount = 0, stable = 0;
+  for (let i = 0; i < 10; i++) {
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 800));
+    await new Promise(r => setTimeout(r, 700));
+    const cnt = document.querySelectorAll('.order-item').length;
+    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
+    lastCount = cnt;
   }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
     const mealLine = lines.find(l => /Lunch|Dinner|HappyHour|Breakfast/.test(l));
     const orderNum = lines.find(l => /^#\d+/.test(l) || /Order\s*#\d+/i.test(l));
-    // Capture item-looking lines
     const itemLines = lines.filter(l =>
       l !== dateLine && l !== mealLine && l !== orderNum &&
       l.length > 3 && !/^\$/.test(l) && !/^(Cancel|View|Reorder|Track)/i.test(l)
@@ -175,11 +179,16 @@ The user's `preferred_cuisines` always takes priority — if "Chinese" is in `pr
 
 ```javascript
 (async () => {
-  for (let i = 0; i < 10; i++) {
+  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
+  // Smart scroll with early termination
+  let lastCount = 0, stable = 0;
+  for (let i = 0; i < 15; i++) {
     window.scrollTo(0, document.body.scrollHeight);
     await new Promise(r => setTimeout(r, 600));
+    const cnt = document.querySelectorAll(SELECTORS).length;
+    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
+    lastCount = cnt;
   }
-  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
   return [...document.querySelectorAll(SELECTORS)].map(item => {
     const wrapper = item.querySelector('.product-item-content-wrapper');
     const brand = wrapper?.querySelector('.brand-wrapper')?.innerText?.trim();
