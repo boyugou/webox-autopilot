@@ -66,17 +66,17 @@ Both files together confirm onboarding actually ran (a stray preferences file al
 > You're already set up! Here's what I found in ~/Documents/WeBox/:
 > - preferences.md ✓
 > - item-reviews.md (X items reviewed)
-> - favorites-cache.md (last updated: DATE, X items)
-> - order-history.md (last synced: DATE, X past orders)
+> - order-history.md (last synced: DATE, X past active orders)
+> - menu-cache/ (X cached slot snapshots)
 >
 > What would you like to do?
 > 1. **Update preferences** — I'll ask what's changed
-> 2. **Re-sync favorites** — re-scrape your WeBox favorites page
-> 3. **Re-sync order history** — pull the latest orders from WeBox
+> 2. **Re-sync order history** — pull the latest orders from WeBox
+> 3. **Clear menu caches** — force a fresh menu scrape on your next order
 > 4. **Update the skill** — pull the latest version from GitHub
 > 5. **Nothing** — just checking
 
-Handle the user's choice. For option 4, jump to Step 6.
+Handle the user's choice. For option 3 — `rm -f ~/Documents/WeBox/menu-cache/*.json`. For option 4, jump to Step 6.
 
 **If not yet onboarded:** continue to Step 3 and Step 4 (which run in the same turn — see notes).
 
@@ -181,15 +181,15 @@ https://www.webox.com/menu/section/My%20Favorites?date=<TODAY_YYYY-MM-DD>&shippi
     const name = wrapper?.querySelector('.product-menu-title')?.innerText?.trim();
     const priceText = wrapper?.querySelector('.product-price')?.innerText?.trim();
     const price = parseFloat(priceText?.replace('$', '') || '0');
-    const rating = wrapper?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0];
-    return { brand, name, price, priceText, rating };
+    const rating = parseFloat(wrapper?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0]) || null;
+    const soldOutEl = item.querySelector('.product-menu-top-sold-out-wrapper');
+    const soldOut = soldOutEl ? getComputedStyle(soldOutEl).display !== 'none' : false;
+    return { brand, name, price, priceText, rating, soldOut };
   }).filter(i => i.name);
 })()
 ```
 
-Note: favorites are scraped without sold-out filtering — the list shows all hearted items regardless of today's availability.
-
-If favorites returns `[]`, write an empty `favorites-cache.md` and note in Step 5b that the user has no favorites yet.
+Note: scrape result for today serves as a "warm cache" only — the user will likely order for future dates and those will trigger their own per-slot scrapes. Result is written to `~/Documents/WeBox/menu-cache/<TODAY>-Lunch.json` (with `sources: ["favorites"]` and `in_favorites: true` per item). If result is empty, just don't write the cache file — onboarding doesn't depend on it.
 
 ---
 
@@ -237,14 +237,31 @@ last_synced: YYYY-MM-DD
 <!-- No orders yet. This file will populate as you place orders through webox-order. -->
 ```
 
-### 5c. Write favorites-cache.md
+### 5c. Write today's menu cache (warm cache for first order)
 
-```markdown
-# Favorites Cache
-last_updated: YYYY-MM-DD
+If the favorites scrape (Step 4b) returned items, write `~/Documents/WeBox/menu-cache/<TODAY>-Lunch.json`:
 
-- Brand | Item Name | $XX.XX | rating X.X
+```json
+{
+  "cached_at": "ISO-8601",
+  "date": "<TODAY>",
+  "meal": "Lunch",
+  "sources": ["favorites"],
+  "items": [
+    {
+      "brand": "Xiangchuan Kitchen",
+      "name": "BBQ Teriyaki Chicken Cutlet",
+      "price": 14.95,
+      "priceText": "$14.95",
+      "rating": 4.5,
+      "in_favorites": true,
+      "categories": ["favorites"]
+    }
+  ]
+}
 ```
+
+Create the `menu-cache/` directory if it doesn't exist. If favorites returned empty, skip this step.
 
 ### 5d. Create empty item-reviews.md (if missing)
 
@@ -264,13 +281,14 @@ last_updated: YYYY-MM-DD
 ```
 ✅ WeBox setup complete! Files in ~/Documents/WeBox/:
 
-  preferences.md       — budget $30, prefer Chinese/Japanese, no mushrooms
-  item-reviews.md      — empty (grows as you order and give feedback)
-  favorites-cache.md   — X favorites scraped
-  order-history.md     — X past orders synced (latest: DATE)
+  preferences.md         — budget $30, prefer Chinese/Japanese, no mushrooms
+  item-reviews.md        — empty (grows as you order and give feedback)
+  order-history.md       — X past active orders synced (latest: DATE)
+  menu-cache/<TODAY>.json — X favorites scraped as warm cache for first order
 
 You're ready to order! Try:
-  "Order my lunch for tomorrow"
+  "Order my lunch for tomorrow"          (smart default — favorites first)
+  "Order something new for tomorrow"     (full menu via webox-order-all)
   "Show my WeBox calendar"
 ```
 

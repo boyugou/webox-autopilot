@@ -34,7 +34,7 @@ Claude Code reads `CLAUDE.md` in the repo and follows the install steps automati
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Either option installs six skills: `webox-onboard`, `webox-order`, `webox-order-all`, `webox-calendar`, `webox-sync-favorites`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
+Either option installs five skills: `webox-onboard`, `webox-order`, `webox-order-all`, `webox-calendar`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
 
 ## Requirements
 
@@ -50,10 +50,9 @@ Either option installs six skills: `webox-onboard`, `webox-order`, `webox-order-
 | Skill | Trigger | Purpose |
 |-------|---------|---------|
 | `webox-onboard` | `/webox-onboard` or "set up WeBox" | First-time setup: preferences, favorites, history. Also handles skill updates. **Run this first.** |
-| `webox-order` | "Order my lunch for tomorrow" | Favorites-first ordering (default). Scrape favorites, fall back to categories if needed, cart, checkout |
-| `webox-order-all` | "Order something new" / "browse the menu" / "ignore my favorites" | Full-menu ordering — skip favorites, scrape across all categories. Use when exploring or when favorites page is blocked |
+| `webox-order` | "Order my lunch for tomorrow" | **Smart default.** Scrapes favorites first; auto-augments with categories if favorites are insufficient for the budget. Picks items, carts, checks out. |
+| `webox-order-all` | "Order something new" / "browse the menu" / "ignore my favorites" | Full-menu variant — skip favorites, scrape all eligible cuisine categories. Use when exploring or when favorites page is blocked. |
 | `webox-calendar` | "Show my WeBox calendar" / "Sync my orders" | View this week + next week, sync from WeBox |
-| `webox-sync-favorites` | "Refresh my favorites" | Re-scrape favorites page, diff against cache |
 | `webox-reset` | "Reset WeBox" / "Start over" | Wipe all local data in ~/Documents/WeBox/ and re-onboard |
 
 ## Usage
@@ -159,10 +158,10 @@ All in `~/Documents/WeBox/` — plain text, edit freely.
 | File | Purpose |
 |------|---------|
 | `preferences.md` | All settings. Created by onboarding, editable forever. |
-| `item-reviews.md` | Your personal ratings and free-form comments on dishes. Multiple comments per dish stack as a timeline. Heavily injected into selection decisions. |
-| `order-history.md` | Unified record of all WeBox orders (past, planned, skipped). Long-term storage; only the recent window is loaded for variety tracking. |
-| `favorites-cache.md` | Cached WeBox favorites list. Refreshed automatically every 7 days. |
-| `items-with-options.md` | Known dishes that open an options modal (e.g., "Choose Rice") with the user's preferred option pre-selected for future orders. |
+| `item-reviews.md` | Your personal ratings + free-form comments per dish (any language). Comments stack as a timeline. Heavily injected into selection. |
+| `order-history.md` | Unified record of all WeBox orders (past, planned, refunded). Long-term storage; only recent entries loaded for variety tracking. |
+| `menu-cache/YYYY-MM-DD-Meal.json` | Per-slot menu snapshot. Records items with `in_favorites` flag and `categories[]` sources. TTL 60 min, auto-pruned after 24h. |
+| `items-with-options.md` | Known dishes with required-options modals + user's chosen options. Grows over time so future modals are pre-selected. |
 
 ---
 
@@ -176,23 +175,26 @@ User prompt
    If preferences missing → tell user to run /webox-onboard first
     │
     ▼
-1. Load preferences.md + item-reviews.md
-   + order-history.md (recent window only)
-   + favorites-cache.md (skip scrape if < 7 days)
+1. Load preferences.md + item-reviews.md + order-history.md (recent window)
     │
     ▼
 2. Sync order history if stale (> 1 day) → update order-history.md
     │
     ▼
-3. Scrape favorites for each needed date (parallel tabs)
-   If favorites insufficient: scrape categories (whitelist/blacklist filter)
+3. For each slot:
+   - Check menu-cache/SLOT.json (TTL 60 min) → reuse if fresh
+   - Else: scrape favorites for the slot
+   - Attempt to plan from favorites
+   - If insufficient (total < budget × 0.4 OR no main): augment with
+     small category set (preferred_cuisines + filler categories),
+     parallel waves of 5 tabs, dedupe by (brand, name)
+   - Write merged menu to menu-cache/SLOT.json
     │
     ▼
-4. Build full multi-day plan
-   Injection: preferences + reviews (5/5 → top, 1/5 → exclude,
-              free-text comments synthesized) + variety rules
-              (fillers exempt) + budget
-   Quantities supported: "× N" notation
+4. Build full multi-day plan from cached menus
+   Inject: preferences + reviews (5/5 → top, 1/5 → exclude, free-text
+           comments synthesized) + variety rules (fillers exempt) +
+           budget + quantity "× N"
     │
     ▼
 4b. Optional Python budget validation (uv run python)
@@ -205,38 +207,39 @@ User prompt
 6. Write plan to order-history.md (status: 📝 planned)
     │
     ▼
-7. For each slot: open page, add items (handle quantities + options modals),
-   checkout. Update order-history.md status to ✅ #ORDERNUM immediately.
+7. For each slot: add items (one at a time, handle modal between),
+   checkout via JS (a.cart.fr → /checkout → .place-btn),
+   update order-history.md to ✅ #ORDERNUM
     │
     ▼
-8. Final summary + invite feedback
-   Free-form reviews appended to item-reviews.md
+8. Final summary + invite free-form feedback
+   Reviews appended to item-reviews.md
 ```
+
+For explicit full-menu exploration, use `webox-order-all` instead — same flow but Step 3 skips favorites and scrapes ALL cuisine categories (parallel waves of 5 tabs).
 
 ## First Session vs Later Sessions
 
 ### First session (after `/webox-onboard`)
 - 1 question asked (preferences in natural language)
-- Order history scraped (smart scroll, stops when no new items load)
-- Favorites scraped (~60s, hidden behind your typing time)
+- Order history scraped in background (smart scroll, stops when no new items)
+- Today's favorites scraped (~10s, hidden behind your typing time, becomes the warm `menu-cache/<TODAY>-Lunch.json`)
 - All files created in `~/Documents/WeBox/`
 
 ### Later sessions
-- preferences.md → loaded instantly
-- item-reviews.md → loaded instantly; new feedback appended each session
-- order-history.md → reused if synced within 1 day; full re-sync otherwise
-- favorites-cache.md → reused if < 7 days old (the biggest win)
-- items-with-options.md → grows over time; known modal items handled automatically
+- preferences.md, item-reviews.md → loaded instantly
+- order-history.md → reused if synced within 1 day; otherwise re-sync
+- menu-cache/SLOT.json → reused if cached_at < 60 min for the slot you're ordering
+- items-with-options.md → known modals handled automatically without prompts
 
 ## Automation Breakdown
 
 | Step | Method | Reliability |
 |------|--------|-------------|
-| Favorites (cached) | Read local file | instant |
-| Favorites (scrape) | JS + smart scroll (stops on no new items) | ✅ 100% |
-| Order history (cached) | Read local file | instant |
+| Menu (cached) | Read local JSON | instant |
+| Menu (scrape favorites) | JS + smart scroll (stops on no new items) | ✅ 100% |
+| Menu (scrape categories) | Parallel waves of 5 tabs, ~10s/wave | ✅ ~5× speedup |
 | Order history (scrape) | JS + smart scroll | ✅ 100% |
-| Multi-date scraping | Parallel tabs (3–5 concurrent) | ✅ ~Nx speedup |
 | Budget validation | Python `sum(p × q)` via `uv run` | ✅ 100% |
 | Add item (no options) | JS click `.btn.plus-add` | ✅ 100% |
 | Add item (with options) | JS click + `find("Add to Cart")` | ✅ 95% |
@@ -272,7 +275,7 @@ A: Just say it: "order 5 waters with Thursday lunch". Quantities are supported w
 A: No. Fillers (drinks, sides, eggs, milk, water, etc.) are exempt from variety rules via `allow_repeat_categories` and `allow_repeat_patterns`. Customize the lists if needed.
 
 **Q: How do I reset favorites cache?**
-A: Say "refresh my favorites" — invokes `webox-sync-favorites`.
+A: Just place an order — the per-slot menu cache TTL is 60 minutes, so it'll re-scrape favorites on your next order. To force a fresh scrape immediately, delete the relevant `~/Documents/WeBox/menu-cache/*.json` file.
 
 **Q: Can I cancel an order it placed?**
 A: Yes — `webox.com/order/list/normal` and cancel within the allowed window.

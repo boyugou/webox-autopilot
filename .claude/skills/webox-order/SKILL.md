@@ -1,41 +1,29 @@
 ---
 name: webox-order
-description: Order food from WeBox using ONLY the user's favorites for each meal slot. Strict favorites-only — does not scrape categories. Use for normal day-to-day ordering ("order my lunch for tomorrow"), repeat usual picks, or when the user wants to stick to known dishes. For exploring the full menu, use webox-order-all instead.
----
-
-## Scope: Favorites-Only (strict)
-
-This skill scrapes ONLY the user's WeBox favorites for each meal slot and plans the order from that scrape. It does **not** scrape any cuisine categories — even if favorites is empty or limited.
-
-If favorites can't fulfill the slot (empty page, all sold out, insufficient items to reach a reasonable budget), **ask the user** before falling back:
-> Your favorites page is empty / limited for [date]. Want me to switch to `/webox-order-all` and scrape the full menu instead?
-
-Sister skill: **`webox-order-all`** scrapes the full menu (all categories). Both share identical selection, budget, cart, and checkout logic — they only differ in what they scrape.
-
+description: Autonomously order food from WeBox (webox.com) using the user's logged-in Chrome session. Smart default — scrapes favorites first for each meal slot, intelligently augments with categories if favorites are insufficient for the budget. Use for normal ordering. For explicit full-menu exploration, use webox-order-all instead.
 ---
 
 # WeBox Order Skill
 
-Data directory: `~/Documents/WeBox/`  
-All user data files are plain text — open in any editor or Finder.
+The default ordering skill. Favorites-first with smart fallback when favorites can't fulfill the slot.
+
+Data directory: `~/Documents/WeBox/` (visible in Finder, plain text).
 
 ## JS-First Principle
 
-**Always prefer JavaScript over computer use for any operation that can be done in JS.** JS is dramatically faster, more reliable, and works in background tabs. Use computer use (screenshots, clicks by coordinate, `find` tool) ONLY when there's no DOM-based alternative — i.e., for visually complex modals with 5+ option groups that need model judgment.
-
-This skill enumerates verified DOM selectors and JS snippets for every step of the ordering flow. Do not fall back to clicking by coordinate or using the `find` tool when a JS selector is documented below.
+**Always prefer JavaScript over computer use.** JS is faster, more reliable, works in background tabs. Use computer use (screenshots, `find`, coordinate clicks) ONLY for visually complex modals with 5+ option groups that genuinely need model judgment. Every other interaction has a verified JS selector documented in this skill.
 
 ## Defaults
 
-- **Meal types:** When not specified, order both **Lunch and Dinner** per day (separate cart/checkout each).
-- **Weekends:** Skip Saturday and Sunday for multi-day ranges unless explicitly requested.
-- **Confirmation mode:** Default `auto` — order without asking, pause only on errors or ambiguity. Set `confirm_before_order: true` for plan-first mode.
+- **Meal types:** When not specified, order both **Lunch and Dinner** per day.
+- **Weekends:** Skip Saturday and Sunday for multi-day ranges unless asked.
+- **Confirmation mode:** Default `auto` — order without asking, pause only on errors or genuine ambiguity. Set `confirm_before_order: true` in preferences for plan-first mode.
 
 ## WeBox Constraints
 
 - **7-day window:** Can only order up to 7 days ahead.
 - **Meal cutoffs:** Lunch has a mid-morning cutoff. Skip slots where cutoff has passed.
-- **Budget per slot:** Each date+meal is a separate checkout. Budget applies per slot.
+- **Budget per slot:** Each date+meal is a separate checkout.
 
 ---
 
@@ -49,50 +37,39 @@ This skill enumerates verified DOM selectors and JS snippets for every step of t
 
 ---
 
-## Step 1: Load Preferences and History
+## Step 1: Load Local State
 
 ### 1a. Preferences
 Read `~/Documents/WeBox/preferences.md`. Extract:
 - `budget`, `budget_mode`, `validate_budget`
-- `confirm_before_order`
-- `default_meals`, `skip_weekends`
-- `avoid_repeat_days` (default: 7), `history_window_days` (default: 28 — ~3 weeks past + 7-day future window)
-- `allow_repeat_categories`, `allow_repeat_patterns` — items matching these are exempt from variety rules (fillers like milk, water, salad, eggs that the user wants to repeat freely)
+- `confirm_before_order`, `default_meals`, `skip_weekends`
+- `avoid_repeat_days` (default 7), `history_window_days` (default 28)
+- `allow_repeat_categories`, `allow_repeat_patterns` (fillers exempt from variety rules)
 - `category_mode` (all | whitelist | blacklist), `category_list`
 - Dietary restrictions, allergens, preferred/avoided cuisines, drinks
 
 ### 1b. Item reviews
-Read `~/Documents/WeBox/item-reviews.md` if it exists. Keep loaded for Step 4.
+Read `~/Documents/WeBox/item-reviews.md` if it exists. Used in Step 4 for selection bias.
 
-### 1c. Order history (variety + slot occupancy)
-Read `~/Documents/WeBox/order-history.md`. This single file serves two purposes:
-- **Slot occupancy:** which date+meal slots are already ordered (skip them)
+### 1c. Order history (slot occupancy + variety tracking)
+Read `~/Documents/WeBox/order-history.md`. Only load entries within `history_window_days` into context. This file serves two purposes:
+- **Slot occupancy:** which date+meal slots are already ordered (only `✅` blocks; `↩️ refunded` and `🚫 cancelled` are OPEN for re-ordering)
 - **Variety tracking:** what items were ordered recently (avoid repeating within `avoid_repeat_days`)
 
-Only load entries within the past `history_window_days` and any future planned entries into context. Older entries stay in the file but are not loaded.
-
-If `last_synced` is more than 1 day old → re-scrape order history (Step 2) before proceeding.
-If file is malformed or missing → treat as missing and re-scrape.
-
-### 1d. Favorites cache
-Read `~/Documents/WeBox/favorites-cache.md`:
-- Fresh (≤ 7 days) → use as-is, skip scraping
-- Stale or missing → scrape (Step 3), update the file
-- Malformed → treat as missing, re-scrape
-
-To force a refresh, dispatch `webox-sync-favorites` skill (say "refresh my favorites").
+If `last_synced` is more than 1 day old → re-sync in Step 2 before proceeding.
+Malformed or missing → treat as empty and re-scrape.
 
 ---
 
 ## Step 2: Sync Order History (if stale)
 
-*Skip if `order-history.md` is fresh (Step 1c).*
+*Skip if `order-history.md` was synced within the last day.*
 
-Navigate to `https://www.webox.com/order/list/normal`. The page uses infinite scroll:
+Navigate to `https://www.webox.com/order/list/normal` and run:
 
 ```javascript
 (async () => {
-  // Smart scroll: stop early when no new items load.
+  await new Promise(r => setTimeout(r, 1500));  // initial paint
   let lastCount = 0, stable = 0;
   for (let i = 0; i < 8; i++) {
     window.scrollTo(0, document.body.scrollHeight);
@@ -102,21 +79,17 @@ Navigate to `https://www.webox.com/order/list/normal`. The page uses infinite sc
     lastCount = cnt;
   }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
-    // Structured selectors (preferred)
-    const orderId = o.querySelector('.order-id')?.innerText?.trim();       // "No.3258614"
-    const orderStatus = o.querySelector('.order-status')?.innerText?.trim(); // "Refunded" | "Cancelled" | absent (= active)
-    // Date and meal aren't in dedicated selectors; extract from text
+    const orderId = o.querySelector('.order-id')?.innerText?.trim();        // "No.3258614"
+    const orderStatus = o.querySelector('.order-status')?.innerText?.trim();  // "Refunded" | "Cancelled" | "Paid" | absent
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
     const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
     const meal = mealLine?.match(/^(Lunch|Dinner|HappyHour)/)?.[1];
-    // Item lines: skip metadata / descriptions / prices / refund flags
     const itemLines = lines.filter(l =>
       l !== dateLine && l !== mealLine && l !== orderId && l !== orderStatus &&
-      !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|No\.\d)/i.test(l) &&
+      !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|Paid|No\.\d)/i.test(l) &&
       !/^\$/.test(l) && l.length > 3
     );
-    // active = the slot is taken; refunded/cancelled slots are open for re-ordering
     const isActive = !orderStatus || !/refund|cancel/i.test(orderStatus);
     return { date: dateLine, meal, orderId, orderStatus: orderStatus || 'active', isActive, items: itemLines };
   }).filter(o => o.date && o.meal);
@@ -124,42 +97,122 @@ Navigate to `https://www.webox.com/order/list/normal`. The page uses infinite sc
 })()
 ```
 
-**Slot-occupancy rule:** Only orders with `isActive: true` block their slot. A slot with a `Refunded` or `Cancelled` order is treated as **open** — the user can re-order it.
-
-Merge into `~/Documents/WeBox/order-history.md`:
-- Add new ordered slots (don't overwrite existing entries — local data may have more detail than the scrape)
+Merge results into `~/Documents/WeBox/order-history.md`:
+- New active slots → `✅ #ORDERNUM`
+- Refunded → `↩️ refunded` (slot still OPEN for re-order)
+- Cancelled → `🚫 cancelled` (slot still OPEN)
 - Update `last_synced` line
-- If the scrape returns empty (new user, no orders), write a `# Order History\nlast_synced: DATE\n\n<!-- No orders yet -->` placeholder
 
-Skip any target date+meal already in the history.
+Skip any target date+meal currently marked `✅` (active).
 
 ---
 
-## Step 3: Scrape Menu
+## Step 3: Scrape Menu (smart favorites-first)
 
-### URL Reference
+For each meal slot needing menu data, follow this decision tree:
 
-**Favorites (primary) — date-bound:**
+### 3a. Cache check
+
+Check `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
+- Fresh (cached_at < 60 min ago) → use it; skip to Step 4
+- Stale or missing → continue to scrape
+
+The cache may have been written by either skill. The `sources` array tells what was scraped:
+- `["favorites"]` → from a previous webox-order run
+- `["Chinese", "Japanese", ...]` (or includes "all") → from webox-order-all
+- Use whatever's there. If favorites isn't represented and you need favorites bias, scrape just favorites and merge.
+
+### 3b. Scrape favorites for the slot
+
+Navigate to (use today's or target date in `YYYY-MM-DD`):
 ```
 https://www.webox.com/menu/section/My%20Favorites?date=YYYY-MM-DD&shippingTime=Lunch
 ```
-Replace `Lunch` with `Dinner` for dinner. Favorites list is the same for both shippingTimes on the same date — scrape once per date.
+Replace `Lunch` with `Dinner` for dinner slots. (Favorites are date-bound — items shown vary by date.)
 
-⚠️ **Favorites are date-bound:** this URL returns only hearted items that are *available on this specific date*. It is NOT the user's complete hearted list. If you need the full picture, scrape multiple upcoming dates and union the results.
+⚠️ **`/menu/section/X` only works for `My%20Favorites`.** For cuisine categories (Chinese, Japanese, etc.), `/menu/section/X` silently falls back to favorites and returns wrong data. Always use the query-param URL in 3c for cuisine categories.
 
-**Full menu:**
+Smart-scroll + scrape:
+```javascript
+(async () => {
+  await new Promise(r => setTimeout(r, 1500));
+  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
+  let lastCount = 0, stable = 0;
+  for (let i = 0; i < 12; i++) {
+    window.scrollTo(0, document.body.scrollHeight);
+    await new Promise(r => setTimeout(r, 350));
+    const cnt = document.querySelectorAll(SELECTORS).length;
+    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
+    lastCount = cnt;
+  }
+  return [...document.querySelectorAll(SELECTORS)].map(item => {
+    const w = item.querySelector('.product-item-content-wrapper');
+    const brand = w?.querySelector('.brand-wrapper')?.innerText?.trim();
+    const name = w?.querySelector('.product-menu-title')?.innerText?.trim();
+    const priceText = w?.querySelector('.product-price')?.innerText?.trim();
+    const price = parseFloat(priceText?.replace('$', '') || '0');
+    const rating = parseFloat(w?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0]) || null;
+    const soldOutEl = item.querySelector('.product-menu-top-sold-out-wrapper');
+    const soldOut = soldOutEl ? getComputedStyle(soldOutEl).display !== 'none' : false;
+    return { brand, name, price, priceText, rating, soldOut };
+  }).filter(i => i.name && !i.soldOut);
+})()
 ```
-https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch
+
+Mark every returned item with `in_favorites: true`, `categories: ["favorites"]`.
+
+### 3c. Sufficiency check → maybe augment
+
+Attempt to draft a plan from favorites alone (use Step 4 selection logic on the favorites items). Then check:
+- Plan total ≥ `budget × 0.4`? AND
+- At least 1 main dish (price > $10 not in `allow_repeat_categories`)?
+
+If both yes → favorites are sufficient. Cache and proceed to Step 4.
+
+If either no → **augment with category scrapes:**
+1. Determine which categories to scrape (small set, NOT all 33):
+   - All cuisines in `preferred_cuisines`
+   - Filler categories: `Drink, Side, Snack, Dairy & Eggs, Produce`
+   - User's prompt-requested cuisine (if any)
+   - Skip anything in `cuisines_to_avoid`
+2. Scrape these categories in parallel (wave of 5 tabs at a time — see "Parallel Multi-Tab Execution" below)
+3. Merge with favorites results. Dedupe by `(brand, name)` key. Items appearing in favorites AND a category keep `in_favorites: true` and accumulate `categories: ["favorites", "Chinese"]`.
+
+In your output to the user, mention the augmentation:
+> Favorites alone were limited for Tue Lunch — also pulled in Chinese and Drink categories to fill the budget.
+
+### 3d. Cache the merged result
+
+Write `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
+```json
+{
+  "cached_at": "2026-05-20T21:30:00",
+  "date": "2026-05-21",
+  "meal": "Lunch",
+  "sources": ["favorites", "Chinese", "Drink"],
+  "items": [
+    {
+      "brand": "Xiangchuan Kitchen",
+      "name": "BBQ Teriyaki Chicken Cutlet",
+      "price": 14.95,
+      "priceText": "$14.95",
+      "rating": 4.5,
+      "in_favorites": true,
+      "categories": ["favorites", "Chinese"]
+    }
+  ]
+}
+```
+Create the `menu-cache/` directory if it doesn't exist. Auto-prune cache files older than 24 hours when loading.
+
+### Cuisine-cuisine URL for categories
+
+Use the ROOT URL with query params, not `/menu/section/X`:
+```
+https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=NAME&objName=NAME
 ```
 
-**By category** (`objId`/`objName` = URL-encoded category name):
-```
-https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=CATEGORY&objName=CATEGORY
-```
-
-⚠️ **CRITICAL — DO NOT use `/menu/section/CATEGORY` for non-favorites.** That URL pattern only works for `My%20Favorites`. For Chinese, Japanese, Drink, etc., `/menu/section/X` **silently falls back to your favorites list and returns wrong data while looking like it worked.** If you scrape "Chinese" and the result is identical to your favorites, this is the bug. Always use the query-param URL above for categories.
-
-**All categories** (use these exact URL values):
+URL-encoded category values (verified from the WeBox DOM):
 
 | Category | URL value |
 |----------|-----------|
@@ -197,161 +250,104 @@ https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=
 | Burmese | `Burmese` |
 | Nepalese | `Nepalese` |
 
-### Category Filter (whitelist / blacklist)
+### Parallel Multi-Tab Execution
 
-Apply `category_mode` from preferences:
-- `all` → consider all categories when expanding beyond favorites
-- `whitelist` → only consider categories in `category_list`
-- `blacklist` → consider all categories EXCEPT those in `category_list`
+Open up to 5 tabs concurrently. Background tabs DO execute JS scroll/scrape correctly for menu pages (verified). For >5 categories, batch in waves of 5.
 
-The user's `preferred_cuisines` always takes priority — if "Chinese" is in `preferred_cuisines`, scrape Chinese even if not in the whitelist (assume the user wants it).
-
-### Scraping Function
-
-```javascript
-(async () => {
-  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
-  // Smart scroll with early termination
-  let lastCount = 0, stable = 0;
-  for (let i = 0; i < 12; i++) {
-    window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 350));
-    const cnt = document.querySelectorAll(SELECTORS).length;
-    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
-    lastCount = cnt;
-  }
-  return [...document.querySelectorAll(SELECTORS)].map(item => {
-    const wrapper = item.querySelector('.product-item-content-wrapper');
-    const brand = wrapper?.querySelector('.brand-wrapper')?.innerText?.trim();
-    const name = wrapper?.querySelector('.product-menu-title')?.innerText?.trim();
-    const priceText = wrapper?.querySelector('.product-price')?.innerText?.trim();
-    const price = parseFloat(priceText?.replace('$', '') || '0');
-    const rating = wrapper?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0];
-    const soldOutEl = item.querySelector('.product-menu-top-sold-out-wrapper');
-    const soldOut = soldOutEl ? getComputedStyle(soldOutEl).display !== 'none' : false;
-    return { brand, name, price, priceText, rating, soldOut };
-  }).filter(i => i.name && !i.soldOut);
-})()
+Pattern:
+```
+# Wave: create N tabs, navigate all (one browser_batch)
+browser_batch([
+  tabs_create_mcp({ url: <cat_url_1> }),
+  tabs_create_mcp({ url: <cat_url_2> }),
+  ... (up to 5)
+])
+# After capturing the returned tab IDs, run scrape JS in all tabs (second browser_batch)
+browser_batch([
+  javascript_tool({ tabId: <id_1>, text: <scrape_js> }),
+  javascript_tool({ tabId: <id_2>, text: <scrape_js> }),
+  ...
+])
+# Close tabs (third browser_batch)
+browser_batch([
+  tabs_close_mcp({ tabId: <id_1> }),
+  ...
+])
 ```
 
-### Parallel Scraping (multi-tab strategy)
+`browser_batch` runs items sequentially in one round-trip, but each JS script is mostly `await sleep()` waiting for lazy-load → the scrapes overlap in time and total ~= max(per-tab time), not sum.
 
-When scraping multiple dates or categories, **open separate tabs in parallel** rather than navigating sequentially in one tab:
+### Rate-limit recovery
 
-```
-For each date or category to scrape:
-  1. tabs_create_mcp → new tabId
-  2. navigate that tab to the target URL
-  3. (don't wait — kick off next tab immediately)
-
-Then for each tab:
-  4. run scraping JS once the page is loaded
-  5. tabs_close_mcp when done
-```
-
-Practical limit: 3–5 concurrent tabs. Cuts total scraping time roughly N×.
-
-### What to Scrape — Strict Favorites Only
-
-1. **Menu cache hit?** Check `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json` first. If it exists and is < 60 minutes old AND its `sources` includes `"favorites"`, use it — no scraping needed.
-
-2. **Scrape the favorites page** for the target date (parallel tabs if multiple dates needed). Use the favorites URL above. Remember: favorites are date-bound.
-
-3. **If favorites returns 0 items or is clearly insufficient** for the budget, STOP and ask the user:
-   > Your favorites page is empty/limited for [date]. Want me to switch to `/webox-order-all` (scrape the full menu) instead?
-   Do NOT silently fall back to categories — this skill is favorites-only by contract.
-
-4. **If the user prompt requests a specific cuisine** ("I want Thai today") and favorites doesn't have it, STOP and ask the user the same question. Don't substitute outside favorites without permission.
-
-5. **Cache the result** to `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
-   ```json
-   {
-     "cached_at": "2026-05-20T21:30:00",
-     "date": "2026-05-21",
-     "meal": "Lunch",
-     "sources": ["favorites"],
-     "items": [
-       {"brand": "...", "name": "...", "price": 17.45, "rating": 4.5, "categories": ["favorites"]}
-     ]
-   }
-   ```
-
-### Menu Cache Hygiene
-
-- TTL: 60 minutes (menus can change as items sell out)
-- Auto-prune cache files older than 24 hours when loading
-- The cache is per-slot; multiple cached slots can coexist
-- If the user explicitly says "re-scrape" or "refresh menu", ignore the cache and re-fetch
-- A cache written by `webox-order-all` has `sources: ["Chinese", "Japanese", ...]` — `webox-order` should treat it as compatible only if `"favorites"` is in `sources`, otherwise re-scrape favorites
+If a scraped page returns 0 items twice in a row, or HTTP fails, wait 30s and retry once. If 3+ pages fail, ask user:
+> WeBox seems to be rate-limiting. Want to wait 60s and retry, or proceed with what I have?
 
 ---
 
-## Step 4: Build the Full Order Plan
+## Step 4: Build the Order Plan
 
-Build all-days plan before touching cart.
+Build a complete plan for ALL slots before touching any cart.
 
 ### Budget Rules
-- `spend-up-to` (default): aim to use most of the budget per slot; prioritize variety
-- `ceiling-only`: pick what looks best without filling the budget
-- Cap is on food item totals (not delivery fees or tax)
+- `spend-up-to` (default): aim to use most of budget per slot, prioritize variety over max value
+- `ceiling-only`: pick what looks best without filling
+- Budget applies to food item total only (not fees/tax)
 
 ### Quantity Handling
-Items can be ordered in quantities > 1 (e.g., 6 tea eggs, 10 milks). Represent as `× N`:
+Items can be ordered in quantities > 1. Represent as `× N`:
 ```
 - Northwest China Cuisine — Tea Egg × 6 — $14.70   ($2.45 × 6)
 ```
-Budget validation must multiply unit price × quantity.
+Budget validation: unit price × quantity.
 
 ### Selection Priority
 
 1. **Hard constraints (never violate):**
    - Dietary restrictions, allergens
    - Items rated 1/5 or tagged `never-again` in reviews
-   - Strongly-negative review comments (e.g., "这个超级咸", "肉太少", "inedible") → treat as hard exclude even without rating
-   - Budget cap (including quantities)
+   - Strongly-negative review comments ("超级咸", "肉太少", "inedible") → hard exclude even without numeric rating
+   - Budget cap
 
 2. **Strong preferences:**
-   - Items rated 4–5/5 or with consistently positive comments → top candidates
+   - Items rated 4–5/5 → top candidates
    - User's prompt constraints
-   - `preferred_cuisines` from preferences
+   - `preferred_cuisines`
 
-3. **Variety (main dishes only):**
-   - Variety rules apply ONLY to **main dishes** (entrées, bowls, bento, noodles, hot pots — the focal item of a meal).
-   - Items in `allow_repeat_categories` (Drink, Side, Snack, Dairy & Eggs, Produce by default) and items matching `allow_repeat_patterns` (milk, water, tea egg, etc.) are treated as **fillers** and are EXEMPT from variety rules. They can repeat day after day, and ordering multiple of the same (e.g., 5 waters) is fine.
-   - For mains: avoid items ordered within `avoid_repeat_days` (check recent entries in `order-history.md`)
-   - Cross-day variety within this session: don't pick the same main twice across consecutive days
+3. **Variety (mains only):**
+   - Apply ONLY to main dishes (entrées, bowls, bento, noodles, hot pots).
+   - Fillers (items matching `allow_repeat_categories` or `allow_repeat_patterns`) are EXEMPT — milk, water, tea egg, side salad can repeat freely; ordering 5 of the same is fine.
+   - For mains: avoid items in recent entries of `order-history.md` (within `avoid_repeat_days`)
+   - Cross-day variety: don't pick the same main twice in this ordering session
 
 4. **Soft preferences:**
-   - WeBox favorites > non-favorites
-   - Fill remaining budget with complementary fillers (sides, drinks) if `spend-up-to`
-   - If the user clearly wants to stock up on a filler ("get me 10 milks for the week"), spread the quantity across days OR put them all in one slot — use judgment based on prompt phrasing.
+   - Items with `in_favorites: true` get a small bias over non-favorites
+   - Fill remaining budget with complementary fillers if `spend-up-to`
+   - User's prompt-requested cuisine restricts the MAIN only — fillers can come from any category
 
-### Item Reviews — How to Read Them
+### Item Reviews — How to Read
 
-Reviews mix structured fields (rating, tags) with **free-form natural-language comments**. Both matter:
+Reviews mix optional ratings with free-form comments in any language. Both matter:
+- "5/5" / "amazing" / "always order" → top preference
+- "4/5" / "good" → preferred
+- "2-3/5" / "ok" / "a bit X" → deprioritize
+- "1/5" / "never again" / "超级咸" → hard exclude (even without number)
+- Free-text option notes ("always purple rice") → apply when modal opens
 
-- **Rating** (when present): 5/5 = strong prefer, 1/5 = hard exclude
-- **Comments** (always weighted): synthesize sentiment yourself
-  - "超级咸" / "too salty" / "inedible" → hard exclude (treat as 1/5)
-  - "肉太少" / "small portion" → deprioritize, only pick if budget forces
-  - "love this" / "amazing" / "always order" → top preference
-  - "好吃但有点贵" / "good but pricey" → consider price-performance
-- **Multiple comments stack:** if comments diverge across dates (loved it once, hated it later), trust the most recent
-- **No rating, only comments:** infer sentiment; don't ignore the item just because no number was given
+If multiple comments diverge across dates, trust the most recent.
 
-When selection is influenced by a review, mention it in plan reasoning:
-> Skipping Spicy Hot Pot — review says "too oily, didn't finish" (2026-05-15).
+When a review influences a decision, mention it:
+> Skipping Spicy Hot Pot — review notes "too oily, didn't finish" (2026-05-15).
 
-### Plan Format
+### Plan Output
 
 ```
 📋 Order Plan — Mon May 25 – Fri May 29
 
 📅 Mon May 25, Lunch — $30.00 budget
   - Xiangchuan Kitchen — Mongolian Beef Bento × 1 — $17.45
-  - Northwest China Cuisine — Tea Egg × 3 — $7.35  ($2.45 × 3)
+  - Northwest China Cuisine — Tea Egg × 3 — $7.35   ($2.45 × 3)
   - Mediterranean Grill House — Taboulleh Salad × 1 — $5.95
-  Total: $30.75 ❌  → over budget, drop Tea Egg × 1 → $28.30 ✓
+  Total: $30.75 ❌ → drop one Tea Egg → $28.30 ✓
 ```
 
 ---
@@ -368,13 +364,13 @@ print(f'OK: \${total:.2f} / \${budget:.2f}')
 "
 ```
 
-If assertion fails: remove the most expensive non-essential item and re-validate.
+If assertion fails: remove most expensive non-essential item, re-validate.
 
 ---
 
 ## Step 5: Confirm or Proceed
 
-**Auto mode** (default): Print plan, proceed immediately. Pause only for unresolvable ambiguity, errors, or out-of-window dates.
+**Auto mode** (`confirm_before_order: false`, default): Print plan, proceed immediately. Pause only for unresolvable ambiguity, errors, out-of-window dates.
 
 **Confirm mode** (`confirm_before_order: true`):
 ```
@@ -386,9 +382,9 @@ Wait for reply, apply changes, re-confirm once before proceeding.
 
 ## Step 6: Save Plan to Order History
 
-Write the plan to `~/Documents/WeBox/order-history.md` before any cart action. Use the unified format below — each slot is one entry, marked `📝 planned` initially, updated to `✅ ordered` after checkout.
+Before touching any cart, write each planned slot to `~/Documents/WeBox/order-history.md` with status `📝 planned`. After successful checkout, update to `✅ #ORDERNUM`.
 
-### Unified Order History Format
+### Order History Format
 
 ```markdown
 # WeBox Order History
@@ -406,39 +402,31 @@ last_synced: YYYY-MM-DD
 ### Mon 05/25 Dinner 📝 planned — $20.25
 - Ox 9 Lanzhou — Sliced Spicy Beef 8oz × 1 — $12.35
 - Horizon — Organic Milk × 2 — $7.90
-
-### Tue 05/26 Lunch ⏰ cutoff passed — not ordered
-
-### Wed 05/27 Lunch ✅ #3258742 — $25.95 (was: Mongolian Beef × 1, sold out → substituted Sliced Spicy Beef)
-- Ox 9 Lanzhou — Sliced Spicy Beef 8oz × 1 — $12.35
-- Mediterranean Grill House — Taboulleh Salad × 1 — $5.95
-- Northwest China Cuisine — Tea Egg × 3 — $7.35
 ```
 
 Status icons:
 - `✅` ordered (with order number)
 - `📝` planned (not yet placed)
+- `↩️` refunded (slot OPEN for re-order)
+- `🚫` cancelled (slot OPEN for re-order)
 - `⏰` cutoff passed
-- `🚫` skipped (sold out, no substitute, user cancelled, etc.)
 - `🔒` outside 7-day window
-
-Rules:
-- Append new slots; never overwrite existing entries
-- Update status from `📝` to `✅` after checkout, set the order number and actual total
-- Note substitutions inline (e.g., "was: X, sold out → substituted Y")
-- Older entries stay forever (long-term record); only the recent window is loaded into context
 
 ---
 
-## Step 7: Add Items to Cart
+## Step 7: Add Items to Cart (one item at a time)
 
-Navigate to the date+meal URL before adding. Each cart is per-slot.
+Navigate to the date+meal URL before adding. Each date's cart is independent — switching the date URL resets cart context.
 
-### Add Item Script
+### Critical: handle items ONE AT A TIME
+
+The biggest pitfall: chaining multiple add-to-cart clicks in one JS scope breaks when an item opens a modal mid-loop (subsequent clicks hit modal background, not the next item). **Each item must be its own discrete add operation** with explicit modal handling between.
+
+### Per-item add helper
 
 ```javascript
 (async () => {
-  const targetName = 'ITEM_NAME_HERE'; // partial match, case-insensitive
+  const targetName = 'ITEM_NAME_HERE';   // partial match, case-insensitive
   const qty = 1;
   const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
   const items = [...document.querySelectorAll(SELECTORS)];
@@ -446,80 +434,53 @@ Navigate to the date+meal URL before adding. Each cart is per-slot.
     const title = item.querySelector('.product-menu-title');
     return title && title.innerText.toLowerCase().includes(targetName.toLowerCase());
   });
-  if (!match) return 'item_not_found';
+  if (!match) return { status: 'item_not_found' };
+  // Two button types: .btn.plus-add (most items) or .product-add-wrapper (items with required options)
   const btn = match.querySelector('.btn.plus-add') || match.querySelector('.product-add-wrapper');
-  if (!btn) return 'no_button_found';
-  for (let i = 0; i < qty; i++) {
-    btn.click();
-    await new Promise(r => setTimeout(r, 350));
-  }
+  if (!btn) return { status: 'no_button' };
+  btn.click();
+  await new Promise(r => setTimeout(r, 1000));
   const modal = document.querySelector('[class*="product-detail-header"]');
-  return modal ? 'modal_opened' : `added_directly_x${qty}`;
+  if (modal) {
+    return { status: 'modal_opened', qty_remaining: qty };
+  }
+  // No modal — increment further if qty > 1
+  for (let i = 1; i < qty; i++) {
+    btn.click();
+    await new Promise(r => setTimeout(r, 400));
+  }
+  return { status: `added_direct_x${qty}` };
 })()
 ```
 
-**Quantity > 1:** Click `qty` times (the `+` increments the counter). For items with required-options modals, click "Add to Cart" once, then use the cart's `+` stepper for additional units.
+If result is `modal_opened`:
 
-**If `no_button_found`:** Debug:
 ```javascript
 (async () => {
-  const items = [...document.querySelectorAll('app-product-menu-item.menu-section-product-item, .new-menu-product-item')];
-  const match = items.find(i => i.querySelector('.product-menu-title')?.innerText?.includes('SEARCH_TERM'));
-  if (!match) return 'no match';
-  return [...match.querySelectorAll('[class*="plus"],[class*="add"],[class*="btn"],[role="button"],button')]
-    .map(b => b.tagName + '.' + b.className.slice(0, 60)).join(' | ');
+  // Check items-with-options.md cache for this item's preferred option (read separately first)
+  // Click "Add to Cart" inside modal
+  document.querySelector('st-button.add-button')?.click();
+  await new Promise(r => setTimeout(r, 1000));
+  // Close modal (does NOT auto-close)
+  document.querySelector('.anticon.anticon-close, [class*="ant-modal-close"]')?.click();
+  await new Promise(r => setTimeout(r, 600));
+  return { modalGone: !document.querySelector('[class*="product-detail-header"]') };
 })()
 ```
 
-### Handling Options Modal (pure JS — no computer use needed)
-
-When `addItem(...)` returns `modal_opened`:
-
-1. **Check the items-with-options cache** at `~/Documents/WeBox/items-with-options.md`. If this item is cached with a specific option, find and click the matching option radio first.
-
-2. **Click "Add to Cart" inside the modal:**
-```javascript
-document.querySelector('st-button.add-button')?.click();
-await new Promise(r => setTimeout(r, 800));
-```
-
-3. **Close the modal:** (The modal does NOT auto-close after Add to Cart — must close explicitly.)
-```javascript
-document.querySelector('.anticon.anticon-close')?.click();
-await new Promise(r => setTimeout(r, 350));
-```
-
-4. **Verify item added:**
-```javascript
-const cartCount = document.querySelector('.cart-count')?.innerText;
-const modalGone = !document.querySelector('.product-detail-header');
-```
-
-5. **Record the new options encounter** by appending to `~/Documents/WeBox/items-with-options.md`:
-```
-- [Brand] [Item Name] — options: "Choose Rice" (single, default: White Rice) — chosen: White Rice — date: YYYY-MM-DD
-```
-Create the file if missing.
-
-**Complex options (5+ option groups, build-your-own bowls)** — this is the ONLY case where computer use is justified: take a screenshot, use model judgment to select reasonable options, then run the JS Add-to-Cart + close above.
-
-### Setting Quantity After Add (cart-side stepper)
-
-If you couldn't loop the `.btn.plus-add` for qty > 1 (e.g., item had a modal), navigate to `/checkout` and use the cart's qty stepper:
+If qty > 1 and the item had a modal: after adding the first unit, navigate to `/checkout` and use the cart's qty stepper:
 
 ```javascript
-// Find the stepper for a specific item by name
 (async () => {
   const targetName = 'ITEM_NAME_HERE';
+  const targetQty = 3;
   const steppers = [...document.querySelectorAll('.input-number-wrapper.isCart')];
-  // Each stepper sits next to its item name
   const stepper = steppers.find(s => {
     const card = s.closest('[class*="cart-item"], [class*="cart-product"]') || s.parentElement?.parentElement;
-    return card && card.innerText.toLowerCase().includes(targetName.toLowerCase());
+    return card?.innerText.toLowerCase().includes(targetName.toLowerCase());
   });
   if (!stepper) return 'item not in cart';
   const currentQty = parseInt(stepper.querySelector('input')?.value || '0', 10);
-  const targetQty = 3; // desired final qty
   const diff = targetQty - currentQty;
   for (let i = 0; i < Math.abs(diff); i++) {
     const btn = stepper.querySelector(diff > 0 ? '.btn.plus' : '.btn.minus:not(.unable)');
@@ -530,68 +491,69 @@ If you couldn't loop the `.btn.plus-add` for qty > 1 (e.g., item had a modal), n
 })()
 ```
 
-### Remove Item from Cart
+### items-with-options cache
 
-Decrementing qty to 0 triggers a confirmation modal. Handle it:
-
-```javascript
-(async () => {
-  const stepper = [...document.querySelectorAll('.input-number-wrapper.isCart')]
-    .find(s => s.closest('[class*="cart-item"], [class*="cart-product"]')?.innerText.toLowerCase().includes('ITEM_NAME'));
-  if (!stepper) return 'not found';
-  // Decrement to 1 first if needed, then once more to trigger confirm
-  while (parseInt(stepper.querySelector('input')?.value || '0', 10) > 1) {
-    stepper.querySelector('.btn.minus')?.click();
-    await new Promise(r => setTimeout(r, 300));
-  }
-  stepper.querySelector('.btn.minus')?.click();
-  await new Promise(r => setTimeout(r, 800));
-  const removeBtn = [...document.querySelectorAll('button')].find(b => /^Remove$/i.test((b.innerText || '').trim()));
-  removeBtn?.click();
-  return 'removed';
-})()
+Before clicking the modal's "Add to Cart", check `~/Documents/WeBox/items-with-options.md` to see if this item has a known preferred option. Format:
+```markdown
+- [Brand] [Item Name] — options: "Choose Rice" (single, default: White Rice) — chosen: Purple Rice — date: YYYY-MM-DD
 ```
 
-### Item Not Found
+If cached, find and click the matching option in the modal before clicking Add to Cart. Otherwise, accept the default pre-selected option.
 
-1. Try category URL and re-scrape
-2. If still missing, substitute with next-best from plan; note substitution inline in `order-history.md`
+After a new options-modal encounter, append to the cache. Create file if missing.
+
+### Complex options (5+ option groups)
+
+This is the only case where computer use is justified. Take a screenshot, use judgment to select reasonable options, then run the modal-add JS above.
+
+### Item not found / sold out at cart time
+
+1. Re-scrape the slot's menu (force cache miss)
+2. Pick a substitute from the cached menu items meeting the same criteria
+3. Note the substitution inline in `order-history.md`:
+   ```
+   ### Mon 05/25 Lunch ✅ #XXX — was: Mongolian Beef (sold out → Sliced Spicy Beef)
+   ```
 
 ---
 
-## Step 8: Checkout (pure JS — no computer use needed)
-
-Two JS clicks place the order:
+## Step 8: Checkout (pure JS, 2 clicks)
 
 ```javascript
 (async () => {
-  // 1. Click cart icon — navigates to /checkout
+  // 1. Cart icon click → navigates to /checkout
   document.querySelector('a.cart.fr')?.click();
   await new Promise(r => setTimeout(r, 2500));
-  if (location.pathname !== '/checkout') return 'failed to reach checkout';
+  if (location.pathname !== '/checkout') return { status: 'failed_to_reach_checkout' };
 
-  // 2. Verify cart contents match plan before placing
-  const lineItems = [...document.querySelectorAll('.input-number-wrapper.isCart')].map(s => ({
-    name: s.closest('[class*="cart-item"], [class*="cart-product"]')?.querySelector('[class*="name"], [class*="title"]')?.innerText?.trim(),
-    qty: s.querySelector('input')?.value
-  }));
-  // If lineItems doesn't match the plan, abort and report — don't place an off-plan order.
-
-  // 3. Click Place Order
-  const placeBtn = document.querySelector('.place-btn');
-  placeBtn?.click();
-  await new Promise(r => setTimeout(r, 3000));
-
-  // 4. Verify success — URL should be /order/finish/<NUMBER>
-  const success = /\/order\/finish\/\d+/.test(location.pathname);
-  const orderNumber = location.pathname.match(/\/order\/finish\/(\d+)/)?.[1];
-  return JSON.stringify({ success, orderNumber, url: location.pathname });
+  // 2. Cart-vs-plan verification
+  const lineItems = [...document.querySelectorAll('.input-number-wrapper.isCart')].map(s => {
+    const card = s.closest('[class*="cart-item"], [class*="cart-product"]') || s.parentElement?.parentElement;
+    return {
+      name: card?.querySelector('[class*="name"], [class*="title"]')?.innerText?.trim(),
+      qty: s.querySelector('input')?.value
+    };
+  });
+  return { status: 'at_checkout', lineItems };
 })()
 ```
 
-After success, **immediately** update `~/Documents/WeBox/order-history.md`:
-- Change `📝 planned` → `✅ #ORDERNUM`
-- Update total if it differs from planned
+**Cart drift check:** compare `lineItems` against the planned items for this slot. If they don't match (different items, qtys, or unexpected additions from a modal default), STOP and report to the user. Don't blindly Place Order.
+
+If everything matches:
+```javascript
+(async () => {
+  document.querySelector('.place-btn')?.click();
+  await new Promise(r => setTimeout(r, 3000));
+  const success = /\/order\/finish\/\d+/.test(location.pathname);
+  const orderNumber = location.pathname.match(/\/order\/finish\/(\d+)/)?.[1];
+  return { success, orderNumber, url: location.pathname };
+})()
+```
+
+After success, immediately update `~/Documents/WeBox/order-history.md`:
+- `📝 planned` → `✅ #ORDERNUM`
+- Update total if different from planned
 
 ```
 ✅ Order placed! Order #XXXXXXX
@@ -602,28 +564,29 @@ After success, **immediately** update `~/Documents/WeBox/order-history.md`:
 
 ## Step 9: Repeat for Each Slot
 
-Repeat Steps 7–8 per date+meal. Final summary:
+Repeat Steps 7–8 per date+meal in the plan. Slots are independent — different carts.
 
+For multiple slots: consider opening one tab per slot for parallel execution (3–5 concurrent). Each tab adds its items and checks out separately.
+
+Final summary:
 ```
 🎉 All done!
 
   Mon May 25 Lunch  $28.30 ✅ #XXXXXXX
   Mon May 25 Dinner $20.25 ✅ #XXXXXXX
-  ...
+  Tue May 26 Lunch  $29.50 ✅ #XXXXXXX
 ```
 
 ---
 
 ## Step 10: Post-Order Feedback
 
-Invite reviews if no feedback was given this session:
-> Done! Any feedback on dishes you've tried — good or bad — just tell me. Free-form is fine: "the Mongolian beef was too dry", "loved the salad", etc.
+If the user hasn't given feedback this session, invite it:
+> Done! Any feedback on dishes you've tried — good or bad — just tell me. Free-form is fine: "too dry", "loved it", "这个超级咸", etc.
 
-Parse any feedback and append to `~/Documents/WeBox/item-reviews.md`. Create the file if missing.
+Parse feedback and append to `~/Documents/WeBox/item-reviews.md`. Create the file if missing.
 
-### Item Review Format
-
-Reviews are flexible. Comments can be free-form natural language in any language. Rating is optional.
+### Review format
 
 ```markdown
 # Item Reviews
@@ -639,23 +602,14 @@ Comments:
 Comments:
 - 2026-05-15: 这个超级咸，肉太少
 - 2026-05-20: 又点了一次，还是咸，不会再点了
-Inferred: hard exclude (consistently negative).
-
-## Ox 9 Lanzhou — Cold Noodles
-Rating: 4/5
-Comments:
-- 2026-05-18: Good but the broth was lukewarm — maybe avoid in winter.
+Inferred: hard exclude.
 ```
 
-When the user gives feedback:
-- New item → append a new `## Brand — Item Name` section
-- Existing item → append a dated comment to its `Comments:` list
-- Don't overwrite past comments; let them stack as a timeline
-- Update rating only if user explicitly gives a number; otherwise infer sentiment in selection logic
+Append dated comments rather than overwriting. Only update Rating if user gives a number explicitly.
 
 ---
 
-## DOM Reference (Verified 2026-05-20 via end-to-end testing)
+## DOM Reference (Verified 2026-05-20 end-to-end)
 
 ### Menu pages
 | Selector | Purpose |
@@ -663,80 +617,62 @@ When the user gives feedback:
 | `app-product-menu-item.menu-section-product-item, .new-menu-product-item` | Product card |
 | `.product-item-content-wrapper` | Content area |
 | `.brand-wrapper` | Brand name |
-| `.product-menu-title` | Item name (clean text) |
+| `.product-menu-title` | Item name (clean text — don't use parent wrappers) |
 | `.product-price` | Price text e.g. "$17.55" |
-| `.product-menu-new-and-rating-wrapper` | Rating (first line is the score) |
-| `.product-menu-top-sold-out-wrapper` | Sold-out flag — use `getComputedStyle(el).display !== 'none'` (the element is ALWAYS in the DOM) |
-| `.btn.plus-add` | Add-to-cart for most items (DIV, not `<button>`) |
-| `.product-add-wrapper` | Add-to-cart for items with required options (SPAN, always opens modal) |
+| `.product-menu-new-and-rating-wrapper` | Rating (first line is score) |
+| `.product-menu-top-sold-out-wrapper` | Sold-out — element is ALWAYS in DOM; check `getComputedStyle(el).display !== 'none'` |
+| `.btn.plus-add` | Add for most items (DIV, not `<button>`) |
+| `.product-add-wrapper` | Add for items with required options (SPAN, always opens modal) |
 
 ### Options modal
 | Selector | Purpose |
 |----------|---------|
-| `.product-detail-header` | Modal-open indicator (exists when modal is open) |
-| `st-button.add-button` | "Add to Cart" button inside the modal |
-| `.anticon.anticon-close` | Close-X button. Modal does NOT auto-close after Add to Cart — click this explicitly. |
+| `[class*="product-detail-header"]` | Modal-open indicator |
+| `st-button.add-button` | "Add to Cart" inside modal |
+| `.anticon.anticon-close` | Close icon — modal does NOT auto-close after Add to Cart |
 
 ### Header / cart
 | Selector | Purpose |
 |----------|---------|
-| `a.cart.fr` | Cart icon in top-right. Click → navigates to `/checkout`. |
-| `.cart-count` | Text "X items" in header |
+| `a.cart.fr` | Cart icon. Click → navigates to `/checkout` |
+| `.cart-count` | Header cart count text "X items" |
 
 ### Checkout page (`/checkout`)
 | Selector | Purpose |
 |----------|---------|
-| `.input-number-wrapper.isCart` | Qty stepper container per cart line item |
-| `.btn.plus` (inside stepper) | Increment qty |
-| `.btn.minus` (inside stepper) | Decrement qty. Class `.unable` added when at min. |
-| `.input-number-wrapper input` | Reads current qty as `.value` |
-| `.place-btn` | "Place Order" button (DIV; multiple instances on page — first one works) |
-| `button` with text "Remove" | Confirmation modal that appears when decrementing qty to 0 |
+| `.input-number-wrapper.isCart` | Qty stepper per line item |
+| `.btn.plus` / `.btn.minus` (inside stepper) | Increment / decrement qty |
+| `.btn.minus.unable` | Disabled state at minimum |
+| `.place-btn` | Place Order button (DIV, first matching one works) |
+| `button` with text "Remove" | Confirmation modal when decrementing qty to 0 |
 
 ### Order list (`/order/list/normal`)
 | Selector | Purpose |
 |----------|---------|
 | `.order-item` | One per order |
-| `.order-id` | Order number text e.g. "No.3258614" |
-| `.order-status` | "Refunded" / "Cancelled" / absent (= active). Refunded/cancelled = slot is OPEN. |
+| `.order-id` | "No.3258614" |
+| `.order-status` | "Refunded" / "Cancelled" / "Paid" / absent (= active) |
 
-### After successful checkout
-- URL changes to `/order/finish/<ORDER_NUMBER>` — parse the number from the URL.
+Note: active/paid orders show meal text as "Dinner (Delivered at 5:49 PM)" — that's why the meal regex uses `(\s|\(|$)` after the meal name.
 
-## Parallel Multi-Tab Execution
+### Success URL
+After successful checkout, URL = `/order/finish/<NUMBER>`.
 
-For multi-slot orders (e.g., Mon–Fri × 2 meals = 10 slots), execute **all slots in parallel** across multiple tabs:
-
-```
-Plan all slots first → For each slot:
-  1. tabs_create_mcp → new tabId
-  2. navigate to date+meal menu URL in that tab
-  3. (kick off next tab immediately)
-
-Then in parallel for each tab:
-  4. Add items via JS (smart loop, handle modals)
-  5. Click cart icon → /checkout
-  6. Click Place Order
-  7. Capture order number from URL
-  8. tabs_close_mcp
-```
-
-**Verified:** Background tabs (visibilityState=hidden) DO execute scroll/JS — menu pages lazy-load correctly. So multi-tab parallel works for scraping AND for execution.
-
-Practical concurrency: 3–5 tabs at a time is safe; beyond that the browser may throttle. For 10 slots, batch in waves of 5.
+---
 
 ## Error Handling
 
-| Error | Response |
-|-------|----------|
-| Item not found | Substitute from plan, note in history |
-| Sold out at cart time | Re-scrape date, pick substitute |
-| Budget exceeded | Remove most expensive non-essential, retry |
-| Modal with unexpected options | Screenshot + judgment |
-| Page not loading | Wait 3s, retry once; skip slot if still failing |
+| Situation | Response |
+|-----------|----------|
+| Item not found in DOM | Re-scrape, then substitute from cached menu |
+| Sold out at cart time | Re-scrape, pick substitute, note inline in history |
+| Budget exceeded mid-plan | Drop most expensive non-essential, re-plan |
+| Cart drift at checkout | STOP, report to user, don't auto-place |
+| Modal with 5+ option groups | Screenshot + judgment + run modal-add JS |
+| Page hangs / CDP timeout | Wait 3s, retry once; skip slot if still failing |
 | Outside 7-day window | Skip silently, note in summary |
-| Empty favorites for date | Fall back to category pages (respect category_mode) |
+| Favorites returns 0 items | Augment with category scrapes (Step 3c) |
+| Favorites blocked / rate-limited | Hand off to `webox-order-all` |
+| 3+ scrapes fail in a row | Ask user to wait 60s |
 | Cache file malformed | Treat as missing, re-scrape |
 | New user, no order history | Continue with empty variety state |
-| Favorites page blocked / rate-limited | Hand off to `webox-order-all` (or fall back to cached menu if fresh) |
-| Multiple scrapes failing in a row | Wait 60s, retry once; if still failing, ask user to wait and try again |

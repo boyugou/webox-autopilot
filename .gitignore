@@ -16,11 +16,10 @@ scratch-*
 # Local user data — lives in ~/Documents/WeBox/, not in the repo
 # (listed here in case anyone accidentally copies them into the project dir)
 preferences.local.md
-favorites-cache.md
 order-history.md
-order-history-cache.json
 item-reviews.md
 items-with-options.md
+menu-cache/
 
 # Editor / IDE
 .vscode/

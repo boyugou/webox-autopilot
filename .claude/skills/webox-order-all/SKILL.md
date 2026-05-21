@@ -1,251 +1,86 @@
 ---
 name: webox-order-all
-description: Order food from WeBox using the FULL menu across all cuisine categories. Strict full-menu — scrapes every category for the meal slot first, then plans from the complete set. Use when the user wants variety, wants to explore beyond favorites, when favorites page is blocked, or when they say "order anything", "browse the menu", "order something new". For favorites-only ordering, use webox-order instead.
+description: Order food from WeBox using the FULL menu (all cuisine categories). Use when the user explicitly wants to explore beyond favorites — "order something new", "browse the menu", "ignore my favorites", or when the favorites page is blocked. For normal day-to-day ordering, use webox-order instead (it's smart-default and includes favorites + auto-fallback to categories if needed).
 ---
 
-# WeBox Order — Full Menu Scope (strict)
+# WeBox Order — Full Menu Variant
 
-This skill scrapes **every cuisine category** for the target meal slot first, builds a unified deduped menu, and only then plans the order. The favorites cache (and `item-reviews.md`) is loaded as **guidance for selection** — not as the source of items.
+This is a thin variant of `webox-order` that scrapes the FULL menu (all eligible cuisine categories) instead of favorites-first. Use this only when the user explicitly wants full-menu exploration or when favorites is unavailable.
 
-Sister skill: **`webox-order`** is favorites-only (does not scrape categories). Both share identical selection, budget, cart, and checkout logic.
+**For everything except Step 3, follow `~/.claude/skills/webox-order/SKILL.md` exactly.** Read that file first (Read tool, full content), then apply the Step 3 override below.
 
-Data directory: `~/Documents/WeBox/`
+## Step 3 override: scrape all categories (skip favorites)
 
-## JS-First Principle
+Instead of `webox-order`'s "favorites-first with smart fallback", do this:
 
-Always prefer JavaScript over computer use for any operation that can be done in JS. Use computer use only for visually complex modals with 5+ option groups. See `webox-order/SKILL.md` for the full DOM Reference and JS snippets — all checkout/cart/modal code is identical here.
+### 3a. Cache check (same as webox-order)
 
-## Defaults
+Check `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`. If fresh AND its `sources` array covers what you'd scrape (i.e., it's from a previous webox-order-all run), use it. Otherwise scrape fresh.
 
-Same as `webox-order`:
-- Meal types: both Lunch and Dinner when not specified
-- Weekends: skip Sat/Sun
-- Confirmation mode: `auto` unless preferences override
-
----
-
-## Step 0: Prerequisite Check
-
-Same as `webox-order` Step 0 — verify Chrome connected, verify `~/Documents/WeBox/preferences.md` exists (if missing → tell user to run `/webox-onboard`).
-
-## Step 1: Load Preferences, Reviews, History
-
-Same as `webox-order` Step 1, EXCEPT for 1d:
-
-### 1d. Favorites cache (loaded as REFERENCE only, not as source)
-Read `~/Documents/WeBox/favorites-cache.md` if it exists. This skill does NOT use it as the item pool — it's loaded purely so the selection logic can prefer hearted items when they appear in the full-menu scrape.
-
-If favorites cache is missing or stale, that's fine — proceed without it.
-
-## Step 2: Sync Order History (if stale)
-
-Same as `webox-order` Step 2.
-
-## Step 3: Scrape the FULL Menu (all categories)
-
-This is the core difference from `webox-order`. **First, scrape all eligible cuisine categories in parallel. Then plan from the merged result.**
-
-### URL — categories only
-
-Use the **root URL with query parameters**:
-```
-https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=CATEGORY&objName=CATEGORY
-```
-
-⚠️ **CRITICAL — DO NOT use `https://www.webox.com/menu/section/CATEGORY`.** That URL pattern works ONLY for `My%20Favorites`. For any cuisine category, `/menu/section/X` **silently falls back to the favorites list and returns wrong data while appearing to succeed.** If two different category scrapes return identical items, this is the bug.
-
-### Which categories to scrape
+### 3b. Determine which categories to scrape
 
 Apply `category_mode` from preferences:
-- `all` → every category in the table below (default behavior for this skill)
+- `all` (default for this skill — overrides preference if absent) → every category in the URL table
 - `whitelist` → only categories in `category_list`
 - `blacklist` → all categories EXCEPT those in `category_list`
 
-Always include `preferred_cuisines` even if a filter would exclude them.
-Skip everything in `cuisines_to_avoid`.
+Always include `preferred_cuisines` even if a filter would exclude them. Skip everything in `cuisines_to_avoid`.
 
-If the user prompt requests a specific cuisine ("I want Thai today"), restrict to that cuisine for the main dish; still scrape filler-eligible categories (Drink, Side, Snack, Dairy & Eggs, Produce) for budget-filling.
+If the user prompt requests a specific cuisine ("I want Thai today"), restrict the MAIN to that cuisine. Still scrape filler categories (Drink, Side, Snack, Dairy & Eggs, Produce) for budget-filling.
 
-### Full category URL value table
+### 3c. Parallel scraping (waves of 5 tabs)
 
-| Category | URL value |
-|----------|-----------|
-| Deals | `Deals` |
-| Chinese | `Chinese` |
-| Bowl | `Bowl` |
-| American | `American` |
-| Drink | `Drink` |
-| Side | `Side` |
-| Entrée | `Entr%C3%A9e` |
-| Noodles | `Noodles` |
-| Salad | `Salad` |
-| Japanese | `Japanese` |
-| Snack | `Snack` |
-| Korean | `Korean` |
-| Produce | `Produce` |
-| Thai | `Thai` |
-| Sandwich | `Sandwich` |
-| Italian | `Italian` |
-| Vietnamese | `Vietnamese` |
-| Mexican | `Mexican` |
-| Burger | `Burger` |
-| Mediterranean | `Mediterranean` |
-| Wrap | `Wrap` |
-| Indian | `Indian` |
-| Dairy & Eggs | `Dairy%20%26%20Eggs` |
-| Greek | `Greek` |
-| Dessert | `Dessert` |
-| French | `French` |
-| Taco | `Taco` |
-| Sushi | `Sushi` |
-| Burrito | `Burrito` |
-| Pizza | `Pizza` |
-| Filipino | `Filipino` |
-| Burmese | `Burmese` |
-| Nepalese | `Nepalese` |
+See `webox-order/SKILL.md` Step 3 "Parallel Multi-Tab Execution" for the exact `browser_batch` pattern. For ~30 categories, that's 6 waves of 5 tabs each. Each wave should complete in ~10s thanks to background-tab JS execution.
 
-### Parallel multi-tab scraping (required)
-
-Scraping 25–33 categories serially is unworkable. **Open in parallel waves of 5 tabs:**
-
+Use the URL pattern (NOT `/menu/section/X`):
 ```
-For each wave of 5 categories:
-  browser_batch([
-    tabs_create_mcp(category_url_1),
-    tabs_create_mcp(category_url_2),
-    tabs_create_mcp(category_url_3),
-    tabs_create_mcp(category_url_4),
-    tabs_create_mcp(category_url_5),
-  ])
-  # Then run scraping JS in all 5 tabs:
-  browser_batch([
-    javascript_tool(scrape_js, tabId_1),
-    javascript_tool(scrape_js, tabId_2),
-    javascript_tool(scrape_js, tabId_3),
-    javascript_tool(scrape_js, tabId_4),
-    javascript_tool(scrape_js, tabId_5),
-  ])
-  # Then close all 5 tabs:
-  browser_batch([tabs_close_mcp x5])
+https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=NAME&objName=NAME
 ```
 
-5 tabs × 6 waves = 30 categories in roughly the time of 6 sequential scrapes. Rate-limit safe.
+Use the URL-encoded category values table from `webox-order/SKILL.md` Step 3.
 
-### Menu scraping JS (per tab)
+⚠️ Anti-pattern: `/menu/section/X` silently falls back to favorites for non-favorites categories. If two different category scrapes return the same items, you used the wrong URL.
 
-```javascript
-(async () => {
-  await new Promise(r => setTimeout(r, 1500));  // initial paint
-  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
-  let lastCount = 0, stable = 0;
-  for (let i = 0; i < 12; i++) {
-    window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 350));
-    const cnt = document.querySelectorAll(SELECTORS).length;
-    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
-    lastCount = cnt;
-  }
-  return [...document.querySelectorAll(SELECTORS)].map(item => {
-    const w = item.querySelector('.product-item-content-wrapper');
-    const brand = w?.querySelector('.brand-wrapper')?.innerText?.trim();
-    const name = w?.querySelector('.product-menu-title')?.innerText?.trim();
-    const priceText = w?.querySelector('.product-price')?.innerText?.trim();
-    const price = parseFloat(priceText?.replace('$', '') || '0');
-    const rating = parseFloat(w?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0]) || null;
-    const soldOutEl = item.querySelector('.product-menu-top-sold-out-wrapper');
-    const soldOut = soldOutEl ? getComputedStyle(soldOutEl).display !== 'none' : false;
-    return { brand, name, price, priceText, rating, soldOut };
-  }).filter(i => i.name && !i.soldOut);
-})()
-```
+Use the same menu scraping JS as `webox-order` Step 3b.
 
-### Deduplicate across categories
+### 3d. Optional: also scrape favorites for selection bias
 
-Same dish often appears in multiple categories (a Chinese snack is in both `Chinese` and `Snack`). Dedupe by `(brand, name)` key. Keep one copy per item, but record all source categories in a `categories: []` array on the merged item.
+If you want `in_favorites: true/false` to inform Step 4 selection (it's a useful soft preference), add one more tab to the first wave for the favorites URL. Skip this if user said "ignore my favorites this time".
 
-### Cache the merged result
+### 3e. Dedupe and cache
+
+Dedupe by `(brand, name)` key. The same dish often appears in multiple categories (e.g., a Chinese snack in both `Chinese` and `Snack`). Keep one merged entry, accumulate sources in `categories: ["Chinese", "Snack"]`.
 
 Write `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
-
 ```json
 {
-  "cached_at": "2026-05-20T21:30:00",
+  "cached_at": "ISO-8601",
   "date": "2026-05-21",
   "meal": "Lunch",
-  "sources": ["Chinese", "Japanese", "Drink", "Side", "..."],
+  "sources": ["all"],         // or list of scraped categories
   "items": [
     {
-      "brand": "Xiangchuan Kitchen",
-      "name": "BBQ Teriyaki Chicken Cutlet",
+      "brand": "...",
+      "name": "...",
       "price": 14.95,
+      "priceText": "$14.95",
       "rating": 4.5,
-      "categories": ["Chinese", "Entrée"],
-      "in_favorites": true
+      "in_favorites": true,    // or null if favorites not scraped
+      "categories": ["Chinese", "Entrée"]
     }
   ]
 }
 ```
 
-If the favorites cache was loaded in Step 1d, annotate each item with `in_favorites: true/false` for downstream selection bias.
-
-TTL: 60 minutes. Auto-prune cache files older than 24 hours.
-
 ### Rate-limit recovery
 
-If a scraped page returns 0 items or hangs:
-1. Wait 5 seconds, retry that single category once.
-2. If still failing, skip that category and continue with the rest.
-3. If 3+ categories fail in a row, WeBox is likely rate-limiting:
-   > WeBox seems to be rate-limiting. Want me to wait 60s and retry, or proceed with what I've already scraped?
+If a page returns 0 items, retry that single category once after 5s. If 3+ categories fail, ask:
+> WeBox seems rate-limiting. Want me to wait 60s and retry, or proceed with what I've scraped?
 
 ---
 
-## Step 4: Build the Order Plan (full-menu selection)
+## Everything else: identical to webox-order
 
-Same selection priority as `webox-order` Step 4:
+Steps 0 (prereq), 1 (load state), 2 (sync history), 4 (build plan), 4b (validate budget), 5 (confirm), 6 (save to history), 7 (add to cart), 8 (checkout), 9 (repeat per slot), 10 (post-order feedback) — all identical. See `~/.claude/skills/webox-order/SKILL.md`.
 
-1. **Hard constraints:** dietary restrictions, allergens, items rated 1/5 or "never again" in reviews, budget cap
-2. **Strong preferences:** items rated 4–5/5, user's prompt constraints, preferred cuisines
-3. **Variety (mains only):** respect `avoid_repeat_days`, fillers exempt via `allow_repeat_categories` and `allow_repeat_patterns`
-4. **Soft preferences (this skill specific):** items with `in_favorites: true` from Step 3 get a small bias; otherwise pick from the full set
-
-Quantity handling, item-reviews injection, plan format — identical to `webox-order` Step 4.
-
-## Step 4b: Validate Budget (if `validate_budget: true`)
-
-Same as `webox-order` Step 4b — `uv run python` sum check.
-
-## Step 5: Confirm or Proceed
-
-Same as `webox-order` Step 5 (`confirm_before_order` setting).
-
-## Step 6: Save Plan to Order History
-
-Same as `webox-order` Step 6 — write to `~/Documents/WeBox/order-history.md` with `📝 planned` status.
-
-## Step 7: Add Items to Cart
-
-Same as `webox-order` Step 7 — all JS-first selectors:
-- `.btn.plus-add` or `.product-add-wrapper` to open add or modal
-- `st-button.add-button` to confirm in modal
-- `.anticon.anticon-close` to close modal
-- Quantity stepper on `/checkout`: `.input-number-wrapper.isCart` → `.btn.plus` / `.btn.minus`
-- Items-with-options cache: `~/Documents/WeBox/items-with-options.md`
-
-## Step 8: Checkout
-
-Same as `webox-order` Step 8 — `a.cart.fr` → `/checkout` → `.place-btn` → `/order/finish/<NUMBER>`.
-
-## Step 9: Repeat for Each Slot
-
-Same as `webox-order` Step 9.
-
-## Step 10: Post-Order Feedback
-
-Same as `webox-order` Step 10 — invite reviews, append to `item-reviews.md`.
-
----
-
-## DOM Reference, Parallel Execution, Error Handling
-
-See `webox-order/SKILL.md` — identical for both skills.
+The DOM Reference and Error Handling tables in `webox-order/SKILL.md` also apply unchanged.

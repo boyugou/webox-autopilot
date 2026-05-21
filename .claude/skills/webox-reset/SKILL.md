@@ -11,10 +11,8 @@ Files in `~/Documents/WeBox/` that get deleted:
 - `preferences.md`
 - `item-reviews.md`
 - `order-history.md`
-- `favorites-cache.md`
 - `items-with-options.md`
-- `order-history-cache.json` (if present)
-- `menu-cache/` (entire directory if present)
+- `menu-cache/` (entire directory)
 
 Does NOT touch:
 - The installed skills at `~/.claude/skills/webox-*` (use `/webox-onboard` → "Update the skill" for that)
@@ -36,7 +34,6 @@ Then ask:
 >   - preferences.md
 >   - item-reviews.md (X items reviewed)
 >   - order-history.md (X past orders, history will resync from WeBox)
->   - favorites-cache.md
 >   - items-with-options.md
 >   - menu-cache/ (X cached menus)
 >
