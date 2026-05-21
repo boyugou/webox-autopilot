@@ -67,7 +67,7 @@ claude --chrome
 ```
 /webox-onboard
 ```
-Answer one open-ended question about your food preferences (any language). Claude scrapes your favorites and order history in the background while you type.
+Answer one open-ended question about your food preferences (any language). After you reply, Claude scrapes your order history and today's favorites sequentially in one tab (~15s).
 
 ### Ordering
 ```
@@ -183,11 +183,11 @@ User prompt
     ▼
 3. For each slot:
    - Check menu-cache/SLOT.json (TTL 60 min) → reuse if fresh
-   - Else: scrape favorites for the slot
+   - Else: scrape favorites for the slot (one tab, sequential)
    - Attempt to plan from favorites
    - If insufficient (total < budget × 0.4 OR no main): augment with
      small category set (preferred_cuisines + filler categories),
-     parallel waves of 5 tabs, dedupe by (brand, name)
+     scraped sequentially in the same tab, dedupe by (brand, name)
    - Write merged menu to menu-cache/SLOT.json
     │
     ▼
@@ -207,23 +207,24 @@ User prompt
 6. Write plan to order-history.md (status: 📝 planned)
     │
     ▼
-7. For each slot: add items (one at a time, handle modal between),
-   checkout via JS (a.cart.fr → /checkout → .place-btn),
-   update order-history.md to ✅ #ORDERNUM
+7. For each slot, for each item: URL search (?queryText=NAME),
+   click add (or modal → Add to Cart → close), all pure JS.
+   Then a.cart.fr → /checkout → .place-btn → /order/finish/<NUMBER>.
+   Update order-history.md to ✅ #ORDERNUM.
     │
     ▼
 8. Final summary + invite free-form feedback
    Reviews appended to item-reviews.md
 ```
 
-For explicit full-menu exploration, use `webox-order-all` instead — same flow but Step 3 skips favorites and scrapes ALL cuisine categories (parallel waves of 5 tabs).
+For explicit full-menu exploration, use `webox-order-all` instead — same flow but Step 3 skips favorites and scrapes across all eligible cuisine + food-type categories (sequentially).
 
 ## First Session vs Later Sessions
 
 ### First session (after `/webox-onboard`)
-- 1 question asked (preferences in natural language)
-- Order history scraped in background (smart scroll, stops when no new items)
-- Today's favorites scraped (~10s, hidden behind your typing time, becomes the warm `menu-cache/<TODAY>-Lunch.json`)
+- 1 question asked (preferences in natural language); skill waits for your reply
+- After reply: order history scraped (~5s), then today's favorites (~5s), sequentially in one tab
+- Today's favorites become the warm `menu-cache/<TODAY>-Lunch.json` for your first order
 - All files created in `~/Documents/WeBox/`
 
 ### Later sessions
@@ -234,18 +235,21 @@ For explicit full-menu exploration, use `webox-order-all` instead — same flow 
 
 ## Automation Breakdown
 
+All operations are pure JavaScript or URL navigation — no slow image+coordinate clicks except for genuinely complex modals.
+
 | Step | Method | Reliability |
 |------|--------|-------------|
 | Menu (cached) | Read local JSON | instant |
-| Menu (scrape favorites) | JS + smart scroll (stops on no new items) | ✅ 100% |
-| Menu (scrape categories) | Parallel waves of 5 tabs, ~10s/wave | ✅ ~5× speedup |
+| Menu (scrape favorites or category) | URL navigate + JS smart-scroll | ✅ ~5s per scrape |
+| Menu (multi-category, e.g. full menu) | Sequential per-category scrapes (~5s each) | ✅ ~35s for 7 categories |
 | Order history (scrape) | JS + smart scroll | ✅ 100% |
 | Budget validation | Python `sum(p × q)` via `uv run` | ✅ 100% |
-| Add item (no options) | JS click `.btn.plus-add` | ✅ 100% |
-| Add item (with options) | JS click + `find("Add to Cart")` | ✅ 95% |
-| Add item × N | JS click N times | ✅ 100% |
-| Complex modal options | Screenshot + model judgment | adaptive |
-| Checkout | `find("Quick Checkout button")` + click | ✅ 99% |
+| Add item (no options) | URL search `?queryText=NAME` + JS click `.btn.plus-add` | ✅ 100% |
+| Add item (with options) | URL search → modal → JS `st-button.add-button` → close | ✅ pure JS |
+| Add item × N | JS click N times (no modal) or cart stepper `/checkout` | ✅ 100% |
+| Complex modal options (5+ groups) | Screenshot + model judgment + JS Add-to-Cart | adaptive |
+| Open cart | JS click `a.cart.fr` → navigates to `/checkout` | ✅ 100% |
+| Place Order | JS click `.place-btn` → URL becomes `/order/finish/<NUMBER>` | ✅ 100% |
 
 ## WeBox Constraints
 

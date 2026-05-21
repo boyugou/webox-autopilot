@@ -30,8 +30,8 @@ rm -rf /tmp/webox-autopilot
 
 After install, **run `/webox-onboard` first** (or say "set up WeBox"). Onboarding takes ~2 minutes and:
 - Verifies Chrome + WeBox login
-- Asks one open-ended preferences question
-- Scrapes favorites and order history in parallel
+- Asks one open-ended preferences question (waits for your reply)
+- Scrapes order history and today's favorites sequentially in one tab (~15s)
 - Writes all data files to `~/Documents/WeBox/`
 
 Do not call `webox-order` before onboarding — it will refuse and ask for setup.
@@ -107,17 +107,21 @@ Or tell the user: "say 'update webox-autopilot'" — `webox-onboard` handles upd
 webox-autopilot/
 ├── .claude/skills/
 │   ├── webox-onboard/SKILL.md       # First-time setup + skill updates
-│   ├── webox-order/SKILL.md         # Core ordering (~600 lines, the canonical reference)
-│   ├── webox-order-all/SKILL.md     # Thin override — Step 3 differs, references webox-order for rest
+│   ├── webox-order/
+│   │   ├── SKILL.md                 # Core ordering (~600 lines, canonical reference)
+│   │   └── SITEMAP.md               # URL patterns, DOM reference, anti-patterns
+│   ├── webox-order-all/SKILL.md     # Thin override — Step 3 differs, references webox-order
 │   ├── webox-calendar/SKILL.md      # View/sync order calendar
 │   └── webox-reset/SKILL.md         # Wipe + re-onboard
 ├── CLAUDE.md                        # This file
 ├── README.md                        # User-facing docs
 ├── LICENSE                          # Apache 2.0
-├── install.sh                       # Installer (copies skills to ~/.claude/skills/)
+├── install.sh                       # Installer (copies all *.md per skill dir to ~/.claude/skills/)
 ├── preferences.md                   # Canonical preferences template
 └── .gitignore
 ```
+
+**`SITEMAP.md` is the single source of truth for all WeBox URL patterns and DOM selectors.** When DOM changes, update it there first. The skills reference it; they also inline-duplicate the most-used scrape JS for self-containment, so a sync sweep is needed when selectors change.
 
 ### Data flow
 
@@ -156,32 +160,9 @@ mv ~/Documents/WeBox ~/Documents/WeBox.bak.$(date +%s)
 rm -rf ~/Documents/WeBox && mv ~/Documents/WeBox.bak.<TIMESTAMP> ~/Documents/WeBox
 ```
 
-### DOM reference (verified 2026-05-20)
+### DOM reference
 
-Order list (`/order/list/normal`):
-- `.order-item` — one per order
-- `.order-id` — e.g. "No.3258614"
-- `.order-status` — "Refunded" / "Cancelled" / "Paid" / absent
-- Active orders show meal text as `"Dinner (Delivered at 5:49 PM)"`; cancelled/refunded show just `"Dinner"`. Meal regex: `/^(Lunch|Dinner|HappyHour)(\s|\(|$)/`
-
-Menu pages (favorites or category):
-- `app-product-menu-item.menu-section-product-item, .new-menu-product-item` — product card
-- `.product-menu-title` — clean name (don't use parent wrappers)
-- `.brand-wrapper` — brand
-- `.product-price` — "$17.55"
-- `.product-menu-top-sold-out-wrapper` — sold-out flag (use `getComputedStyle(el).display !== 'none'`)
-- `.btn.plus-add` — add for most items (DIV)
-- `.product-add-wrapper` — add for items with required options (SPAN, opens modal)
-- `[class*="product-detail-header"]` — modal-open indicator
-- `st-button.add-button` — Add to Cart inside modal
-- `.anticon.anticon-close` — modal close (modal does NOT auto-close after Add)
-
-Cart / Checkout (`/checkout`):
-- `a.cart.fr` — cart icon (click → navigates to `/checkout`)
-- `.input-number-wrapper.isCart` — qty stepper per line item
-- `.btn.plus` / `.btn.minus` inside stepper, `.btn.minus.unable` at min
-- `.place-btn` — Place Order (DIV)
-- After success: URL = `/order/finish/<NUMBER>`
+See `.claude/skills/webox-order/SITEMAP.md` — it's the single source of truth for URL patterns, DOM selectors, anti-patterns, and small JS helpers. Don't duplicate selector docs here (they drift); link to SITEMAP.md instead.
 
 ### When DOM changes
 

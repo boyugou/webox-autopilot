@@ -16,7 +16,7 @@ All files are plain text — open them in any editor or Finder.
 
 1. Verifies Claude in Chrome is connected and WeBox is logged in
 2. Asks one open-ended question about your food preferences
-3. While you type the answer, scrapes your favorites and order history in parallel
+3. After you reply, scrapes your favorites and order history sequentially in one tab (~10-15s total)
 4. Writes all data files to `~/Documents/WeBox/`
 5. Shows a summary
 
@@ -78,45 +78,27 @@ Both files together confirm onboarding actually ran (a stray preferences file al
 
 Handle the user's choice. For option 3 — `rm -f ~/Documents/WeBox/menu-cache/*.json`. For option 4, jump to Step 6.
 
-**If not yet onboarded:** continue to Step 3 and Step 4 (which run in the same turn — see notes).
+**If not yet onboarded:** continue to Step 3 (ask question, wait for reply), then Step 4 (scrape sequentially after reply).
 
 ---
 
-## Step 3 + Step 4: Ask Question + Launch Parallel Scrapes
+## Step 3: Ask the preferences question
 
-**CRITICAL: do these as ONE response turn, with TWO new tabs created and BOTH scrapes kicked off in a SINGLE `browser_batch` call.** Do not scrape sequentially. Do not navigate the main tab — leave it alone so the user can see what's happening.
-
-### Step 3: Ask the preferences question
-
-In your response text (BEFORE the tool calls):
+Say:
 
 > Before your first order, tell me about your food preferences — anything goes: budget, diet, allergens, cuisines you love or avoid, whether you want me to confirm before ordering, drink preferences, etc. Answer however feels natural — one sentence or a full paragraph, in any language.
->
-> *(I'm scraping your order history and favorites in the background while you type.)*
 
-### Step 4: Launch both scrapes in a single browser_batch call
+**Then wait for the user's reply. Do not start scraping yet** — scraping in parallel with the question opens multiple tabs the user didn't expect and may produce unreliable results (background-tab lazy load is inconsistent). Scrape AFTER the user replies, in Step 4.
 
-Use this exact pattern — create both tabs, navigate both, then JS-execute both, all in ONE `browser_batch`:
+## Step 4: Scrape sequentially (after the user has replied)
 
-```
-browser_batch([
-  # Create tab 1 — order history
-  { name: "tabs_create_mcp", input: { url: "https://www.webox.com/order/list/normal" } },
-  # Create tab 2 — favorites (use today's date in YYYY-MM-DD)
-  { name: "tabs_create_mcp", input: { url: "https://www.webox.com/menu/section/My%20Favorites?date=<TODAY>&shippingTime=Lunch" } },
-])
-```
+Two scrapes, one tab at a time, in the same single tab where possible. Total time ~10–15s.
 
-After the batch returns the two tab IDs, IMMEDIATELY issue a SECOND `browser_batch` that runs JS in both tabs in parallel:
+**4a. Order history first** — navigate the existing main tab to `https://www.webox.com/order/list/normal` and run the smart-scroll scrape from SCRIPT_4A below. Save to `~/Documents/WeBox/order-history.md`.
 
-```
-browser_batch([
-  { name: "javascript_tool", input: { action: "javascript_exec", tabId: <HISTORY_TAB_ID>, text: <SCRIPT_4A> } },
-  { name: "javascript_tool", input: { action: "javascript_exec", tabId: <FAVORITES_TAB_ID>, text: <SCRIPT_4B> } },
-])
-```
+**4b. Then favorites** — in the same tab, navigate to `https://www.webox.com/menu/section/My%20Favorites?date=<TODAY_YYYY-MM-DD>&shippingTime=Lunch` and run SCRIPT_4B. Save to `~/Documents/WeBox/menu-cache/<TODAY>-Lunch.json` as the warm cache (see Step 5c format).
 
-`browser_batch` items execute sequentially in the same round-trip but each runs to completion in its own tab — meaning **both scrapes overlap in time** because each spends most of its time inside the JS `await sleep()` waiting for the page to lazy-load. Net effect: ~2x faster than serial.
+Reusing the same tab avoids the multi-tab permission prompts and the "what are these tabs" surprise. Each scrape is ~5s, sequential total ~10s.
 
 #### 4a. Order history scrape (SCRIPT_4A)
 
@@ -142,7 +124,7 @@ The order list page is heavier than menu pages. **Keep scrolls fast (300ms) and 
     const meal = mealLine?.match(/^(Lunch|Dinner|HappyHour)/)?.[1];
     const itemLines = lines.filter(l =>
       l !== dateLine && l !== mealLine && l !== orderId && l !== orderStatus &&
-      !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|No\.\d)/i.test(l) &&
+      !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|Paid|No\.\d)/i.test(l) &&
       !/^\$/.test(l) && l.length > 3
     );
     const isActive = !orderStatus || !/refund|cancel/i.test(orderStatus);
@@ -152,7 +134,7 @@ The order list page is heavier than menu pages. **Keep scrolls fast (300ms) and 
 })()
 ```
 
-Mark only `isActive: true` entries as `✅` in `order-history.md`. Refunded/cancelled → `↩️` and slot stays openable. Empty result → write a "no orders yet" placeholder.
+Mark `isActive: true` entries as `✅` in `order-history.md`. Refunded/cancelled → `↩️` and slot stays openable. Empty result → write a "no orders yet" placeholder.
 
 **Recovery if CDP times out:** if this script times out, the order list page may be hung. Skip it for first-run (write an empty order-history.md with a comment "first sync deferred — will retry on first webox-order call"). Don't retry in onboarding — onboarding shouldn't block on this.
 

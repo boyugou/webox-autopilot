@@ -183,7 +183,7 @@ If either no → **augment with category scrapes:**
    - Filler categories: `Drink, Side, Snack, Dairy & Eggs, Produce`
    - User's prompt-requested cuisine (if any)
    - Skip anything in `cuisines_to_avoid`
-2. Scrape these categories in parallel (wave of 5 tabs at a time — see "Parallel Multi-Tab Execution" below)
+2. Scrape these categories **sequentially in a single tab** (~5s each; ~35s total for ~7 categories). Parallel multi-tab is unreliable for lazy-load — see "Scraping Strategy" section below.
 3. Merge with favorites results. Dedupe by `(brand, name)` key. Items appearing in favorites AND a category keep `in_favorites: true` and accumulate `categories: ["favorites", "Chinese"]`.
 
 In your output to the user, mention the augmentation:
@@ -568,9 +568,7 @@ After success, immediately update `~/Documents/WeBox/order-history.md`:
 
 ## Step 9: Repeat for Each Slot
 
-Repeat Steps 7–8 per date+meal in the plan. Slots are independent — different carts.
-
-For multiple slots: consider opening one tab per slot for parallel execution (3–5 concurrent). Each tab adds its items and checks out separately.
+Repeat Steps 7–8 per date+meal in the plan **sequentially**. Slots are independent — different carts — but multi-tab parallelism is not recommended (untested for cart/checkout, risk of cart drift across tabs). Each slot takes ~20-30s end-to-end (a few items + checkout).
 
 Final summary:
 ```

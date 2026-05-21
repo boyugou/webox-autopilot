@@ -39,7 +39,7 @@ Navigate to `https://www.webox.com/order/list/normal`. Scroll 5–10 times to lo
     const meal = mealLine?.match(/^(Lunch|Dinner|HappyHour)/)?.[1];
     const itemLines = lines.filter(l =>
       l !== dateLine && l !== mealLine && l !== orderId && l !== orderStatus &&
-      !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|No\.\d)/i.test(l) &&
+      !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|Paid|No\.\d)/i.test(l) &&
       !/^\$/.test(l) && l.length > 3
     );
     const isActive = !orderStatus || !/refund|cancel/i.test(orderStatus);
