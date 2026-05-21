@@ -96,7 +96,7 @@ Two scrapes, one tab at a time, in the same single tab where possible. Total tim
 
 **4a. Order history first** — navigate the existing main tab to `https://www.webox.com/order/list/normal` and run the smart-scroll scrape from SCRIPT_4A below. Convert each order to per-week JSON and save to `~/Documents/WeBox/orders/YYYY-Www.json` (see schema in Step 5b).
 
-**4b. Then favorites** — in the same tab, navigate to `https://www.webox.com/menu/section/My%20Favorites?date=<TODAY_YYYY-MM-DD>&shippingTime=Lunch` and run SCRIPT_4B. Save to `~/Documents/WeBox/menu-cache/<TODAY>-Lunch.json` as the warm cache (see Step 5c format).
+**4b. Then favorites** — use **tomorrow's date** (not today). Today's Lunch cutoff may have passed, which causes WeBox to silently redirect from the favorites URL to the next orderable slot's full-menu view (returns 100+ wrong items, not favorites). Navigate the same tab to `https://www.webox.com/menu/section/My%20Favorites?date=<TOMORROW_YYYY-MM-DD>&shippingTime=Lunch` and run SCRIPT_4B. Save to `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json` as the warm cache.
 
 Reusing the same tab avoids the multi-tab permission prompts and the "what are these tabs" surprise. Each scrape is ~5s, sequential total ~10s.
 
@@ -173,14 +173,23 @@ Empty result (new user, no orders) → create `~/Documents/WeBox/orders/.empty` 
 
 #### 4b. Favorites scrape (SCRIPT_4B)
 
-Use today's date in `YYYY-MM-DD` format (e.g., `2026-05-20`) when constructing the URL:
+Use **tomorrow's date** in `YYYY-MM-DD` format when constructing the URL (today's slot may have its cutoff passed, causing WeBox to silently redirect):
 ```
-https://www.webox.com/menu/section/My%20Favorites?date=<TODAY_YYYY-MM-DD>&shippingTime=Lunch
+https://www.webox.com/menu/section/My%20Favorites?date=<TOMORROW_YYYY-MM-DD>&shippingTime=Lunch
 ```
 
 ```javascript
 (async () => {
-  await new Promise(r => setTimeout(r, 1500));  // initial paint
+  await new Promise(r => setTimeout(r, 1500));
+  // Redirect detection — WeBox silently redirects favorites→full menu when the
+  // target slot's cutoff has passed. Check URL AND the rendered "My Favorites"
+  // section header in the DOM (ground truth). If either is off → redirected.
+  const urlOk = /My%20Favorites|My Favorites/.test(location.href);
+  const headerEl = [...document.querySelectorAll('.menu-section-header__title, [class*="section-header__title"]')]
+    .find(e => /My Favorites/i.test((e.innerText || '').trim()));
+  if (!urlOk || !headerEl) {
+    return JSON.stringify({ error: 'redirected', urlOk, headerFound: !!headerEl, url: location.href, hint: 'Use a later orderable date+meal' });
+  }
   const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
   let lastCount = 0, stable = 0;
   for (let i = 0; i < 12; i++) {
@@ -190,7 +199,7 @@ https://www.webox.com/menu/section/My%20Favorites?date=<TODAY_YYYY-MM-DD>&shippi
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;
   }
-  return [...document.querySelectorAll(SELECTORS)].map(item => {
+  const items = [...document.querySelectorAll(SELECTORS)].map(item => {
     const wrapper = item.querySelector('.product-item-content-wrapper');
     const brand = wrapper?.querySelector('.brand-wrapper')?.innerText?.trim();
     const name = wrapper?.querySelector('.product-menu-title')?.innerText?.trim();
@@ -201,10 +210,17 @@ https://www.webox.com/menu/section/My%20Favorites?date=<TODAY_YYYY-MM-DD>&shippi
     const soldOut = soldOutEl ? getComputedStyle(soldOutEl).display !== 'none' : false;
     return { brand, name, price, priceText, rating, soldOut };
   }).filter(i => i.name);
+  // Sanity guard: favorites typically returns 10-200 items. If 200+, redirect probably happened but URL check missed.
+  if (items.length > 250) {
+    return JSON.stringify({ error: 'suspect_redirect', count: items.length, hint: 'Try a later date' });
+  }
+  return JSON.stringify({ items });
 })()
 ```
 
-Note: scrape result for today serves as a "warm cache" only — the user will likely order for future dates and those will trigger their own per-slot scrapes. Result is written to `~/Documents/WeBox/menu-cache/<TODAY>-Lunch.json` (with `sources: ["favorites"]` and `in_favorites: true` per item). If result is empty, just don't write the cache file — onboarding doesn't depend on it.
+If the result is `{error: "redirected", ...}` or `{error: "suspect_redirect", ...}`, retry with the next orderable date+meal slot. If even tomorrow's Lunch redirects, the user may have no orderable slots in the immediate future — just write `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json` with an empty `items: []` and note in the summary.
+
+Otherwise: result is `{items: [...]}` — write the items array to `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json` wrapped in the standard cache schema (Step 5c).
 
 ---
 

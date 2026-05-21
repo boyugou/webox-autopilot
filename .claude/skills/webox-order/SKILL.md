@@ -204,6 +204,18 @@ For each source (favorites + each category):
 ```javascript
 (async () => {
   await new Promise(r => setTimeout(r, 1500));
+  // Redirect detection for favorites pages — WeBox redirects favorites→full menu
+  // when the target slot's cutoff has passed. Check both URL and the actual
+  // rendered "My Favorites" header element (DOM is ground truth).
+  const expectFavorites = location.href.includes('menu/section');
+  if (expectFavorites) {
+    const urlOk = /My%20Favorites|My Favorites/.test(location.href);
+    const headerEl = [...document.querySelectorAll('.menu-section-header__title, [class*="section-header__title"]')]
+      .find(e => /My Favorites/i.test((e.innerText || '').trim()));
+    if (!urlOk || !headerEl) {
+      return JSON.stringify({ error: 'redirected_from_favorites', urlOk, headerFound: !!headerEl, url: location.href });
+    }
+  }
   const SEL = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
   let lastCount = 0, stable = 0;
   for (let i = 0; i < 12; i++) {
@@ -213,7 +225,7 @@ For each source (favorites + each category):
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;
   }
-  return [...document.querySelectorAll(SEL)].map(item => {
+  const items = [...document.querySelectorAll(SEL)].map(item => {
     const w = item.querySelector('.product-item-content-wrapper');
     const brand = w?.querySelector('.brand-wrapper')?.innerText?.trim();
     const name = w?.querySelector('.product-menu-title')?.innerText?.trim();
@@ -224,8 +236,14 @@ For each source (favorites + each category):
     const soldOut = soldOutEl ? getComputedStyle(soldOutEl).display !== 'none' : false;
     return { brand, name, price, priceText, rating, soldOut };
   }).filter(i => i.name && !i.soldOut);
+  if (expectFavorites && items.length > 250) {
+    return JSON.stringify({ error: 'suspect_redirect', count: items.length });
+  }
+  return JSON.stringify({ items });
 })()
 ```
+
+If the result is `{error: ...}`, the favorites URL got redirected — use the next orderable date+meal. For cart-side scrapes that are already for a future slot, the redirect should not happen.
 
 ### 3e. Merge + dedupe + cache
 

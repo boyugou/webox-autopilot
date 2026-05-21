@@ -15,7 +15,7 @@ Verified URL patterns and DOM behavior. Read this for any new task involving WeB
 | `https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&queryText=NAME` | **Search** within a slot | **Use this for cart-add per item.** First result = best match. Returns up to 50 items. URL-encode spaces (`%20`). |
 | `https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=NAME&objName=NAME` | Cuisine category (Chinese, Japanese, Korean, Thai, etc.) | `objId` and `objName` = same human-readable name. Use for ethnic cuisine categories. |
 | `https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CATEGORY&objId=<NUM>&objName=NAME` | Food-type category (Drink, Side, Snack, Bowl, Dessert, etc.) | `objId` is a NUMERIC database ID. Must be discovered from the navbar at runtime (click the icon, capture the URL). |
-| `https://www.webox.com/menu/section/My%20Favorites?date=YYYY-MM-DD&shippingTime=Lunch` | User's hearted favorites | **Date-bound** — returns hearted items available on this date, NOT the user's full hearted list. |
+| `https://www.webox.com/menu/section/My%20Favorites?date=YYYY-MM-DD&shippingTime=Lunch` | User's hearted favorites | **Slot-bound and future-only.** Returns hearted items available for THIS specific date+meal slot, NOT the user's full hearted list. ⚠️ If the slot's order cutoff has passed (e.g., today's Lunch after mid-morning), **WeBox silently redirects to the next orderable slot's full-menu view** (URL becomes `/menu/section/?date=NEXT&shippingTime=...&primaryType=CATEGORY`) and returns 100+ items that are NOT favorites. Always use a date+meal slot that's still in the orderable future. After navigating, verify `location.href` still contains `My%20Favorites` — if not, you were redirected and got wrong data. |
 
 ### ⚠️ Anti-pattern (DO NOT use)
 
@@ -85,6 +85,23 @@ Then update this table with the discovered ID.
 ---
 
 ## DOM Reference
+
+### Favorites page detection (avoid silent redirect to full menu)
+
+The favorites page renders this header when it's actually showing favorites:
+
+```
+.menu-section-header__title   →  innerText = "My Favorites"
+```
+
+When WeBox silently redirects (cutoff passed for that slot), this element either disappears entirely or shows a different title. Always check both:
+
+```javascript
+const urlOk = /My%20Favorites|My Favorites/.test(location.href);
+const headerEl = [...document.querySelectorAll('.menu-section-header__title')]
+  .find(e => /My Favorites/i.test(e.innerText || ''));
+if (!urlOk || !headerEl) { /* redirected — retry with a later orderable slot */ }
+```
 
 ### Menu page product card
 
