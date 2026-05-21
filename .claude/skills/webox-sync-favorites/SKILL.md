@@ -31,9 +31,9 @@ Navigate to `https://www.webox.com/menu/section/My%20Favorites?date=TODAY&shippi
   const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
   // Smart scroll: stops early when no new items load
   let lastCount = 0, stable = 0;
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 12; i++) {
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 350));
     const cnt = document.querySelectorAll(SELECTORS).length;
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;

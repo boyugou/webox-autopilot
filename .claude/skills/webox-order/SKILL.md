@@ -83,9 +83,9 @@ Navigate to `https://www.webox.com/order/list/normal`. The page uses infinite sc
 (async () => {
   // Smart scroll: stop early when no new items load.
   let lastCount = 0, stable = 0;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 8; i++) {
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 700));
+    await new Promise(r => setTimeout(r, 350));
     const cnt = document.querySelectorAll('.order-item').length;
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;
@@ -197,9 +197,9 @@ The user's `preferred_cuisines` always takes priority — if "Chinese" is in `pr
   const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
   // Smart scroll with early termination
   let lastCount = 0, stable = 0;
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 12; i++) {
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 350));
     const cnt = document.querySelectorAll(SELECTORS).length;
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;
@@ -441,7 +441,7 @@ Navigate to the date+meal URL before adding. Each cart is per-slot.
   if (!btn) return 'no_button_found';
   for (let i = 0; i < qty; i++) {
     btn.click();
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 350));
   }
   const modal = document.querySelector('[class*="product-detail-header"]');
   return modal ? 'modal_opened' : `added_directly_x${qty}`;
@@ -476,7 +476,7 @@ await new Promise(r => setTimeout(r, 800));
 3. **Close the modal:** (The modal does NOT auto-close after Add to Cart — must close explicitly.)
 ```javascript
 document.querySelector('.anticon.anticon-close')?.click();
-await new Promise(r => setTimeout(r, 600));
+await new Promise(r => setTimeout(r, 350));
 ```
 
 4. **Verify item added:**

@@ -24,24 +24,32 @@ If you've already run onboarding, it offers to update preferences, re-sync data,
 
 ---
 
-## Step 1: Check Prerequisites
+## Step 1: Check Prerequisites (single batch, fast)
 
-### 1a. Claude in Chrome
-Call `tabs_context_mcp`. If no tabs or error:
-> Claude in Chrome doesn't seem to be connected. Please make sure Chrome is running with the [Claude in Chrome extension](https://code.claude.com/docs/en/chrome) enabled, then try again.
+Run all of these in ONE `browser_batch` call to minimize round-trips and permission prompts:
 
-Stop here.
+```
+browser_batch([
+  tabs_context_mcp,                                       # verify Chrome connected
+  navigate(main_tab, "https://www.webox.com"),           # also serves as login check
+])
+```
 
-### 1b. WeBox login
-Navigate to `https://www.webox.com`. Check for a logged-in state (user avatar/name visible). If not logged in:
+Then in JavaScript on the main tab, check for login state:
+```javascript
+({ loggedIn: !!document.querySelector('[class*="user-avatar"], [class*="user-name"], [class*="header-avatar"], a.cart.fr') })
+```
+`a.cart.fr` is the cart icon — only present when logged in.
+
+If `loggedIn: false`:
 > You're not logged into WeBox. Please log in at webox.com in Chrome and try again.
 
-Stop here.
-
-### 1c. Data directory
+Then create the data directory:
 ```bash
 mkdir -p ~/Documents/WeBox
 ```
+
+**Permission note:** Claude in Chrome may ask the user for permission to navigate to webox.com on the FIRST navigation. This is normal and only happens once per origin. Don't navigate to webox.com multiple times — one nav is enough.
 
 ---
 
@@ -74,38 +82,60 @@ Handle the user's choice. For option 4, jump to Step 6.
 
 ---
 
-## Step 3 + Step 4: Parallel Onboarding Turn
+## Step 3 + Step 4: Ask Question + Launch Parallel Scrapes
 
-In a single response, do **both** of these so they happen in parallel from the user's perspective:
+**CRITICAL: do these as ONE response turn, with TWO new tabs created and BOTH scrapes kicked off in a SINGLE `browser_batch` call.** Do not scrape sequentially. Do not navigate the main tab — leave it alone so the user can see what's happening.
 
 ### Step 3: Ask the preferences question
 
-Say:
+In your response text (BEFORE the tool calls):
 
 > Before your first order, tell me about your food preferences — anything goes: budget, diet, allergens, cuisines you love or avoid, whether you want me to confirm before ordering, drink preferences, etc. Answer however feels natural — one sentence or a full paragraph, in any language.
+>
+> *(I'm scraping your order history and favorites in the background while you type.)*
 
-### Step 4: While the user is typing — start background data collection
+### Step 4: Launch both scrapes in a single browser_batch call
 
-In the same turn, kick off these tool calls. The user reads the question and starts typing; the scrapes run in parallel:
+Use this exact pattern — create both tabs, navigate both, then JS-execute both, all in ONE `browser_batch`:
 
-#### 4a. Scrape order history
+```
+browser_batch([
+  # Create tab 1 — order history
+  { name: "tabs_create_mcp", input: { url: "https://www.webox.com/order/list/normal" } },
+  # Create tab 2 — favorites (use today's date in YYYY-MM-DD)
+  { name: "tabs_create_mcp", input: { url: "https://www.webox.com/menu/section/My%20Favorites?date=<TODAY>&shippingTime=Lunch" } },
+])
+```
 
-Navigate to `https://www.webox.com/order/list/normal` (use a fresh tab so the main tab stays available). The page uses infinite scroll — smart-scroll up to 20 times for first-run (stops early when no new items load):
+After the batch returns the two tab IDs, IMMEDIATELY issue a SECOND `browser_batch` that runs JS in both tabs in parallel:
+
+```
+browser_batch([
+  { name: "javascript_tool", input: { action: "javascript_exec", tabId: <HISTORY_TAB_ID>, text: <SCRIPT_4A> } },
+  { name: "javascript_tool", input: { action: "javascript_exec", tabId: <FAVORITES_TAB_ID>, text: <SCRIPT_4B> } },
+])
+```
+
+`browser_batch` items execute sequentially in the same round-trip but each runs to completion in its own tab — meaning **both scrapes overlap in time** because each spends most of its time inside the JS `await sleep()` waiting for the page to lazy-load. Net effect: ~2x faster than serial.
+
+#### 4a. Order history scrape (SCRIPT_4A)
+
+The order list page is heavier than menu pages. **Keep scrolls fast (300ms) and capped at 8** to avoid CDP timeouts. Smart-scroll terminates as soon as no new items load:
 
 ```javascript
 (async () => {
-  // Smart scroll: up to 20 scrolls for first-run with early termination.
+  await new Promise(r => setTimeout(r, 1500));  // initial paint
   let lastCount = 0, stable = 0;
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 8; i++) {
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 700));
+    await new Promise(r => setTimeout(r, 350));
     const cnt = document.querySelectorAll('.order-item').length;
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;
   }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
-    const orderId = o.querySelector('.order-id')?.innerText?.trim();       // "No.3258614"
-    const orderStatus = o.querySelector('.order-status')?.innerText?.trim(); // "Refunded" | "Cancelled" | absent
+    const orderId = o.querySelector('.order-id')?.innerText?.trim();
+    const orderStatus = o.querySelector('.order-status')?.innerText?.trim();
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
     const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)$/.test(l));
@@ -121,22 +151,25 @@ Navigate to `https://www.webox.com/order/list/normal` (use a fresh tab so the ma
 })()
 ```
 
-Note: only `isActive: true` entries should be written as `✅ ordered` in `order-history.md`. Refunded/cancelled entries should be marked `🚫 refunded` or `🚫 cancelled` so the slot stays openable. If the scrape returns `[]` (zero orders), write a placeholder.
+Mark only `isActive: true` entries as `✅` in `order-history.md`. Refunded/cancelled → `↩️` and slot stays openable. Empty result → write a "no orders yet" placeholder.
 
-#### 4b. Scrape favorites
+**Recovery if CDP times out:** if this script times out, the order list page may be hung. Skip it for first-run (write an empty order-history.md with a comment "first sync deferred — will retry on first webox-order call"). Don't retry in onboarding — onboarding shouldn't block on this.
 
-Use today's date in `YYYY-MM-DD` format (e.g., `2026-05-20`). Navigate to:
+#### 4b. Favorites scrape (SCRIPT_4B)
+
+Use today's date in `YYYY-MM-DD` format (e.g., `2026-05-20`) when constructing the URL:
 ```
 https://www.webox.com/menu/section/My%20Favorites?date=<TODAY_YYYY-MM-DD>&shippingTime=Lunch
 ```
 
 ```javascript
 (async () => {
+  await new Promise(r => setTimeout(r, 1500));  // initial paint
   const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
   let lastCount = 0, stable = 0;
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 12; i++) {
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 350));
     const cnt = document.querySelectorAll(SELECTORS).length;
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;

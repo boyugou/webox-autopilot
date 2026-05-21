@@ -25,7 +25,7 @@ Navigate to `https://www.webox.com/order/list/normal`. Scroll 5–10 times to lo
   let lastCount = 0, stable = 0;
   for (let i = 0; i < maxScrolls; i++) {
     window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 700));
+    await new Promise(r => setTimeout(r, 350));
     const cnt = document.querySelectorAll('.order-item').length;
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;
