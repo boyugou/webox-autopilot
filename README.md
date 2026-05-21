@@ -2,7 +2,7 @@
 
 > Order your WeBox meals autonomously with Claude Code — favorites-first, budget-aware, variety-conscious, fully transparent.
 
-**webox-autopilot** is a set of four Claude Code skills that order food from [WeBox](https://webox.com) by simply telling Claude what you want. It uses your existing logged-in Chrome session, scrapes the menu, picks items based on your preferences and past reviews, and checks out — all without leaving your terminal.
+**webox-autopilot** is a set of five Claude Code skills that order food from [WeBox](https://webox.com) by simply telling Claude what you want. It uses your existing logged-in Chrome session, scrapes the menu, picks items based on your preferences and past reviews, and checks out — all without leaving your terminal. All steps run as pure JavaScript in the browser (no slow visual clicks) wherever possible.
 
 ```
 Order lunch and dinner Mon–Fri next week, Chinese and Japanese only.
@@ -34,7 +34,7 @@ Claude Code reads `CLAUDE.md` in the repo and follows the install steps automati
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Either option installs four skills: `webox-onboard`, `webox-order`, `webox-calendar`, `webox-sync-favorites`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
+Either option installs five skills: `webox-onboard`, `webox-order`, `webox-calendar`, `webox-sync-favorites`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
 
 ## Requirements
 
@@ -53,6 +53,7 @@ Either option installs four skills: `webox-onboard`, `webox-order`, `webox-calen
 | `webox-order` | "Order my lunch for tomorrow" | Full ordering flow — scrape, select, cart, checkout |
 | `webox-calendar` | "Show my WeBox calendar" / "Sync my orders" | View this week + next week, sync from WeBox |
 | `webox-sync-favorites` | "Refresh my favorites" | Re-scrape favorites page, diff against cache |
+| `webox-reset` | "Reset WeBox" / "Start over" | Wipe all local data in ~/Documents/WeBox/ and re-onboard |
 
 ## Usage
 

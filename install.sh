@@ -17,8 +17,8 @@ WEBOX_DIR="$HOME/Documents/WeBox"
 
 echo "Installing webox-autopilot skills..."
 
-# Install all four skills
-for skill in webox-onboard webox-order webox-calendar webox-sync-favorites; do
+# Install all five skills
+for skill in webox-onboard webox-order webox-calendar webox-sync-favorites webox-reset; do
   mkdir -p "$CLAUDE_SKILLS/$skill"
   cp "$SKILLS_SRC/$skill/SKILL.md" "$CLAUDE_SKILLS/$skill/"
   echo "  ✓ $skill"

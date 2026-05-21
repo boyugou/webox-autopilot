@@ -8,6 +8,12 @@ description: Autonomously order food from WeBox (webox.com) using the user's log
 Data directory: `~/Documents/WeBox/`  
 All user data files are plain text — open in any editor or Finder.
 
+## JS-First Principle
+
+**Always prefer JavaScript over computer use for any operation that can be done in JS.** JS is dramatically faster, more reliable, and works in background tabs. Use computer use (screenshots, clicks by coordinate, `find` tool) ONLY when there's no DOM-based alternative — i.e., for visually complex modals with 5+ option groups that need model judgment.
+
+This skill enumerates verified DOM selectors and JS snippets for every step of the ordering flow. Do not fall back to clicking by coordinate or using the `find` tool when a JS selector is documented below.
+
 ## Defaults
 
 - **Meal types:** When not specified, order both **Lunch and Dinner** per day (separate cart/checkout each).
@@ -455,18 +461,86 @@ Navigate to the date+meal URL before adding. Each cart is per-slot.
 })()
 ```
 
-### Handling Options Modal
+### Handling Options Modal (pure JS — no computer use needed)
 
-If result is `modal_opened`:
-1. Check `~/Documents/WeBox/items-with-options.md` — if item is cached, use the noted option.
-2. Else: `find("Add to Cart button")` → `computer scroll_to` + `computer left_click`. Default option is accepted.
-3. Complex options (5+ groups, build-your-own): screenshot + model judgment + computer use.
+When `addItem(...)` returns `modal_opened`:
 
-Append new items-with-options encounters to `~/Documents/WeBox/items-with-options.md`:
+1. **Check the items-with-options cache** at `~/Documents/WeBox/items-with-options.md`. If this item is cached with a specific option, find and click the matching option radio first.
+
+2. **Click "Add to Cart" inside the modal:**
+```javascript
+document.querySelector('st-button.add-button')?.click();
+await new Promise(r => setTimeout(r, 800));
 ```
-- [Brand] [Item Name] — option: "Choose Rice" (single) — chosen: Purple Rice — date: YYYY-MM-DD
+
+3. **Close the modal:** (The modal does NOT auto-close after Add to Cart — must close explicitly.)
+```javascript
+document.querySelector('.anticon.anticon-close')?.click();
+await new Promise(r => setTimeout(r, 600));
+```
+
+4. **Verify item added:**
+```javascript
+const cartCount = document.querySelector('.cart-count')?.innerText;
+const modalGone = !document.querySelector('.product-detail-header');
+```
+
+5. **Record the new options encounter** by appending to `~/Documents/WeBox/items-with-options.md`:
+```
+- [Brand] [Item Name] — options: "Choose Rice" (single, default: White Rice) — chosen: White Rice — date: YYYY-MM-DD
 ```
 Create the file if missing.
+
+**Complex options (5+ option groups, build-your-own bowls)** — this is the ONLY case where computer use is justified: take a screenshot, use model judgment to select reasonable options, then run the JS Add-to-Cart + close above.
+
+### Setting Quantity After Add (cart-side stepper)
+
+If you couldn't loop the `.btn.plus-add` for qty > 1 (e.g., item had a modal), navigate to `/checkout` and use the cart's qty stepper:
+
+```javascript
+// Find the stepper for a specific item by name
+(async () => {
+  const targetName = 'ITEM_NAME_HERE';
+  const steppers = [...document.querySelectorAll('.input-number-wrapper.isCart')];
+  // Each stepper sits next to its item name
+  const stepper = steppers.find(s => {
+    const card = s.closest('[class*="cart-item"], [class*="cart-product"]') || s.parentElement?.parentElement;
+    return card && card.innerText.toLowerCase().includes(targetName.toLowerCase());
+  });
+  if (!stepper) return 'item not in cart';
+  const currentQty = parseInt(stepper.querySelector('input')?.value || '0', 10);
+  const targetQty = 3; // desired final qty
+  const diff = targetQty - currentQty;
+  for (let i = 0; i < Math.abs(diff); i++) {
+    const btn = stepper.querySelector(diff > 0 ? '.btn.plus' : '.btn.minus:not(.unable)');
+    btn?.click();
+    await new Promise(r => setTimeout(r, 350));
+  }
+  return `qty set to ${stepper.querySelector('input')?.value}`;
+})()
+```
+
+### Remove Item from Cart
+
+Decrementing qty to 0 triggers a confirmation modal. Handle it:
+
+```javascript
+(async () => {
+  const stepper = [...document.querySelectorAll('.input-number-wrapper.isCart')]
+    .find(s => s.closest('[class*="cart-item"], [class*="cart-product"]')?.innerText.toLowerCase().includes('ITEM_NAME'));
+  if (!stepper) return 'not found';
+  // Decrement to 1 first if needed, then once more to trigger confirm
+  while (parseInt(stepper.querySelector('input')?.value || '0', 10) > 1) {
+    stepper.querySelector('.btn.minus')?.click();
+    await new Promise(r => setTimeout(r, 300));
+  }
+  stepper.querySelector('.btn.minus')?.click();
+  await new Promise(r => setTimeout(r, 800));
+  const removeBtn = [...document.querySelectorAll('button')].find(b => /^Remove$/i.test((b.innerText || '').trim()));
+  removeBtn?.click();
+  return 'removed';
+})()
+```
 
 ### Item Not Found
 
@@ -475,16 +549,39 @@ Create the file if missing.
 
 ---
 
-## Step 8: Checkout
+## Step 8: Checkout (pure JS — no computer use needed)
 
-After all items for one slot are added:
+Two JS clicks place the order:
 
-1. Open cart (click cart icon top-right)
-2. `find("Quick Checkout button")` → `computer scroll_to` + `computer left_click`
-3. Wait for "Thank you for your order" — note the order number
-4. **Immediately** update `~/Documents/WeBox/order-history.md`:
-   - Change `📝 planned` → `✅ #ORDERNUM`
-   - Update total if it differs from planned
+```javascript
+(async () => {
+  // 1. Click cart icon — navigates to /checkout
+  document.querySelector('a.cart.fr')?.click();
+  await new Promise(r => setTimeout(r, 2500));
+  if (location.pathname !== '/checkout') return 'failed to reach checkout';
+
+  // 2. Verify cart contents match plan before placing
+  const lineItems = [...document.querySelectorAll('.input-number-wrapper.isCart')].map(s => ({
+    name: s.closest('[class*="cart-item"], [class*="cart-product"]')?.querySelector('[class*="name"], [class*="title"]')?.innerText?.trim(),
+    qty: s.querySelector('input')?.value
+  }));
+  // If lineItems doesn't match the plan, abort and report — don't place an off-plan order.
+
+  // 3. Click Place Order
+  const placeBtn = document.querySelector('.place-btn');
+  placeBtn?.click();
+  await new Promise(r => setTimeout(r, 3000));
+
+  // 4. Verify success — URL should be /order/finish/<NUMBER>
+  const success = /\/order\/finish\/\d+/.test(location.pathname);
+  const orderNumber = location.pathname.match(/\/order\/finish\/(\d+)/)?.[1];
+  return JSON.stringify({ success, orderNumber, url: location.pathname });
+})()
+```
+
+After success, **immediately** update `~/Documents/WeBox/order-history.md`:
+- Change `📝 planned` → `✅ #ORDERNUM`
+- Update total if it differs from planned
 
 ```
 ✅ Order placed! Order #XXXXXXX
@@ -548,21 +645,75 @@ When the user gives feedback:
 
 ---
 
-## DOM Reference (Verified 2026-05-20)
+## DOM Reference (Verified 2026-05-20 via end-to-end testing)
 
+### Menu pages
 | Selector | Purpose |
 |----------|---------|
 | `app-product-menu-item.menu-section-product-item, .new-menu-product-item` | Product card |
 | `.product-item-content-wrapper` | Content area |
 | `.brand-wrapper` | Brand name |
 | `.product-menu-title` | Item name (clean text) |
-| `.product-price` | Price text |
-| `.product-menu-new-and-rating-wrapper` | Rating (first line is score) |
-| `.product-menu-top-sold-out-wrapper` | Sold-out flag — use `getComputedStyle(el).display !== 'none'` |
-| `.btn.plus-add` | Add-to-cart for most items (DIV) |
-| `.product-add-wrapper` | Add-to-cart for items with required options (SPAN, opens modal) |
-| `[class*="product-detail-header"]` | Modal open indicator |
-| `.order-item` | Row on `/order/list/normal` |
+| `.product-price` | Price text e.g. "$17.55" |
+| `.product-menu-new-and-rating-wrapper` | Rating (first line is the score) |
+| `.product-menu-top-sold-out-wrapper` | Sold-out flag — use `getComputedStyle(el).display !== 'none'` (the element is ALWAYS in the DOM) |
+| `.btn.plus-add` | Add-to-cart for most items (DIV, not `<button>`) |
+| `.product-add-wrapper` | Add-to-cart for items with required options (SPAN, always opens modal) |
+
+### Options modal
+| Selector | Purpose |
+|----------|---------|
+| `.product-detail-header` | Modal-open indicator (exists when modal is open) |
+| `st-button.add-button` | "Add to Cart" button inside the modal |
+| `.anticon.anticon-close` | Close-X button. Modal does NOT auto-close after Add to Cart — click this explicitly. |
+
+### Header / cart
+| Selector | Purpose |
+|----------|---------|
+| `a.cart.fr` | Cart icon in top-right. Click → navigates to `/checkout`. |
+| `.cart-count` | Text "X items" in header |
+
+### Checkout page (`/checkout`)
+| Selector | Purpose |
+|----------|---------|
+| `.input-number-wrapper.isCart` | Qty stepper container per cart line item |
+| `.btn.plus` (inside stepper) | Increment qty |
+| `.btn.minus` (inside stepper) | Decrement qty. Class `.unable` added when at min. |
+| `.input-number-wrapper input` | Reads current qty as `.value` |
+| `.place-btn` | "Place Order" button (DIV; multiple instances on page — first one works) |
+| `button` with text "Remove" | Confirmation modal that appears when decrementing qty to 0 |
+
+### Order list (`/order/list/normal`)
+| Selector | Purpose |
+|----------|---------|
+| `.order-item` | One per order |
+| `.order-id` | Order number text e.g. "No.3258614" |
+| `.order-status` | "Refunded" / "Cancelled" / absent (= active). Refunded/cancelled = slot is OPEN. |
+
+### After successful checkout
+- URL changes to `/order/finish/<ORDER_NUMBER>` — parse the number from the URL.
+
+## Parallel Multi-Tab Execution
+
+For multi-slot orders (e.g., Mon–Fri × 2 meals = 10 slots), execute **all slots in parallel** across multiple tabs:
+
+```
+Plan all slots first → For each slot:
+  1. tabs_create_mcp → new tabId
+  2. navigate to date+meal menu URL in that tab
+  3. (kick off next tab immediately)
+
+Then in parallel for each tab:
+  4. Add items via JS (smart loop, handle modals)
+  5. Click cart icon → /checkout
+  6. Click Place Order
+  7. Capture order number from URL
+  8. tabs_close_mcp
+```
+
+**Verified:** Background tabs (visibilityState=hidden) DO execute scroll/JS — menu pages lazy-load correctly. So multi-tab parallel works for scraping AND for execution.
+
+Practical concurrency: 3–5 tabs at a time is safe; beyond that the browser may throttle. For 10 slots, batch in waves of 5.
 
 ## Error Handling
 
