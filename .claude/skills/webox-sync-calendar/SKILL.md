@@ -35,22 +35,32 @@ Navigate to `https://www.webox.com/order/list/normal`. Scroll smart-style (stops
   }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
     const orderId = o.querySelector('.order-id')?.innerText?.trim();
-    const orderStatus = o.querySelector('.order-status')?.innerText?.trim();
+    const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
     const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
     const meal = mealLine?.match(/^(Lunch|Dinner|HappyHour)/)?.[1];
-    const itemLines = lines.filter(l =>
-      l !== dateLine && l !== mealLine && l !== orderId && l !== orderStatus &&
-      !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|Paid|No\.\d)/i.test(l) &&
-      !/^\$/.test(l) && l.length > 3
-    );
-    const isActive = !orderStatus || !/refund|cancel/i.test(orderStatus);
-    return { date: dateLine, meal, orderId, orderStatus: orderStatus || 'active', isActive, items: itemLines };
-  }).filter(o => o.date && o.meal && o.isActive);  // FILTER cancelled/refunded out
+    const totalMatch = o.innerText.match(/Total[:\s]*\$?([\d.]+)/i);
+    const total = totalMatch ? parseFloat(totalMatch[1]) : null;
+    // Structured per-item via .product-item — yields compact {name, brand, price}.
+    // Skip the long description text entirely to keep output small.
+    const items = [...o.querySelectorAll('.product-item')].map(p => {
+      const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
+      const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+      const descLine = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
+      const priceLine = txt.find(l => /^\$[\d.]+/.test(l));
+      const price = priceLine ? parseFloat(priceLine.replace('$', '')) : null;
+      const brand = descLine?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim();
+      return { name, brand, price };
+    }).filter(x => x.name);
+    const isActive = !/refund|cancel/i.test(orderStatus);
+    return { date: dateLine, meal, orderId, status: orderStatus, total, isActive, items };
+  }).filter(o => o.date && o.meal && o.isActive && o.items.length);
   return JSON.stringify(orders);
 })()
 ```
+
+**Output is compact by design.** Each order returns `{date, meal, orderId, status, total, items: [{name, brand, price}]}` — no item descriptions, no allergens text, no marketing copy. A 41-order history fits comfortably in one tool result (under 5KB typically). This avoids display truncation and saves context tokens.
 
 ## Step 2: Merge into per-week JSON files
 
