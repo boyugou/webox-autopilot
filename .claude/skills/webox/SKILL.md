@@ -25,7 +25,7 @@ Also read the four cached identity files if present (the user has presumably run
 - `~/Documents/WeBox/favorites.json` → `{products: [{id, name, brand, category}], unresolvedProductIds, brands, synced_at}`
 - `~/Documents/WeBox/hidden.json` → same shape
 
-Plus `~/Documents/WeBox/preferences.md` for the user's preferences.
+Plus `~/Documents/WeBox/config.yaml` (structured settings) and `~/Documents/WeBox/preferences.md` (free-form notes).
 
 ## Step 2: Prerequisite Check
 

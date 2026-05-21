@@ -572,9 +572,11 @@ Changed from defaults:
 Everything else kept default.
 
 Files in ~/Documents/WeBox/:
-  preferences.md           — your settings (edit in Finder anytime)
+  config.yaml              — structured settings (budget, restrictions, drinks, ...)
+  preferences.md           — free-form notes (edit in Finder anytime)
   user-profile.json        — Boyu Gou, boyu.gou@..., 6145568304
   address-info.json        — 1881 Page Mill Rd (kitchen 12838)
+  shipping-windows.json    — Lunch + Dinner cutoff windows (from your past orders)
   favorites.json           — 131 hearted products
   hidden.json              — 180 "Not Interested" products
   orders/                  — 407 past active orders across N weeks

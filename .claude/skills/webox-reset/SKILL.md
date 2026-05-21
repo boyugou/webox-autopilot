@@ -7,15 +7,19 @@ description: Reset webox-autopilot back to a clean state — delete all local da
 
 Clears all local webox-autopilot data and re-runs onboarding.
 
-Files in `~/Documents/WeBox/` that get deleted:
-- `preferences.md`
-- `item-reviews.md`
-- `orders/` (per-week JSON history files)
-- `menu-cache/` (entire directory)
+Files in `~/Documents/WeBox/` that get deleted (everything — `rm -rf ~/Documents/WeBox`):
+- `config.yaml` — structured settings
+- `preferences.md` — free-form notes
+- `user-profile.json`, `address-info.json`, `shipping-windows.json` — identity caches
+- `favorites.json`, `hidden.json` — hearted / Not-Interested lists
+- `item-reviews.md` — your reviews
+- `orders/` — per-ISO-week order history (will resync from WeBox on next onboard)
+- `menu-cache/` — per-slot menu snapshots
 
 Does NOT touch:
 - The installed skills at `~/.claude/skills/webox-*` (use `/webox-onboard` → "Update the skill" for that)
 - Anything outside `~/Documents/WeBox/`
+- Your WeBox account itself (past orders, favorites, etc. all remain on webox.com)
 
 ---
 
@@ -29,11 +33,11 @@ ls -la ~/Documents/WeBox/
 
 Then ask:
 
-> About to wipe these files in ~/Documents/WeBox/:
->   - preferences.md
+> About to wipe ~/Documents/WeBox/ entirely. This includes:
+>   - config.yaml + preferences.md (your settings + free-form notes)
 >   - item-reviews.md (X items reviewed)
->   - orders/ (X weeks of history files — will resync from WeBox)
->   - menu-cache/ (X cached menus)
+>   - orders/ (X weeks of history — will resync from WeBox)
+>   - identity caches (user-profile, address-info, favorites, hidden, shipping-windows)
 >
 > Your WeBox account itself is untouched — only the local files Claude uses.
 > Type "yes reset" to confirm.
