@@ -353,11 +353,12 @@ This avoids POST-time stock failures for low-stock items.
    - User's prompt constraints (e.g., "Chinese only today")
    - `preferred_cuisines` (match `category`)
 
-3. **Variety (mains only):**
+3. **Variety (mains only) — HARD GATE, not a suggestion:**
    - ONLY apply to mains (entrées, bowls, bento, noodles, hot pots).
    - Items whose `category` is listed in `allow_repeat_categories` (e.g., Beverage, Appetizer, Snacks) are EXEMPT — they can repeat freely; ordering 5 of the same is fine.
-   - For mains: avoid productIds in recent `orders/YYYY-Www.json` entries within `avoid_repeat_days`.
-   - Cross-day variety in this session: don't pick the same main twice across consecutive days.
+   - **Build the recent set BEFORE picking** (see "Step 3a — variety context" below).
+   - **Validate the plan AFTER picking** (see "Step 3c — variety validation").
+   - **If any picked main violates the recent set, REPLAN with that productId+brand excluded** — don't ship the plan.
 
 4. **Soft preferences:**
    - `in_favorites: true` items get a small bias
@@ -375,17 +376,123 @@ Reviews are free-form prose in any language with optional ratings. Both matter:
 If comments diverge across dates, trust the most recent. When a review influences a decision, mention it:
 > Skipping Spicy Hot Pot — review notes "too oily, didn't finish" (2026-05-15).
 
+### Step 3a — Build the variety context (run BEFORE picking)
+
+Compute the "recently ordered" set from per-week files. Use this as a hard exclusion list when picking mains.
+
+```bash
+uv run --no-project python3 << 'EOF'
+import json, os, glob, datetime
+AVOID_DAYS = 7  # from config.yaml avoid_repeat_days
+ALLOW_REPEAT_CATEGORIES = ['Beverage', 'Appetizer', 'Snacks', 'Salads']  # from config.yaml
+today = datetime.date.today()
+cutoff = today - datetime.timedelta(days=AVOID_DAYS)
+
+# Collect productIds and brand+productId pairs from recent orders
+recent_pids = set()       # block exact productId repeats
+recent_brand_pids = set() # block same productId from same brand even if different ID variant
+
+for f in glob.glob(os.path.expanduser("~/Documents/WeBox/orders/*.json")):
+    try:
+        d = json.load(open(f))
+        for o in d.get("orders", []):
+            dt = datetime.date.fromisoformat(o["date"])
+            if not (cutoff <= dt <= today + datetime.timedelta(days=7)):
+                continue
+            for it in o.get("items", []):
+                pid, brand, name = it.get("productId"), it.get("brand"), (it.get("name") or "")
+                # Skip filler categories — they're allowed to repeat
+                # (Best-effort category check via menu cache lookup; fall back to allowing all if no info)
+                recent_pids.add(pid)
+                if brand and pid:
+                    recent_brand_pids.add((brand, pid))
+
+# Also compute a "frequent brand" set — brands appearing 2+ times in the recent window
+from collections import Counter
+brand_counts = Counter()
+for f in glob.glob(os.path.expanduser("~/Documents/WeBox/orders/*.json")):
+    try:
+        d = json.load(open(f))
+        for o in d.get("orders", []):
+            dt = datetime.date.fromisoformat(o["date"])
+            if not (cutoff <= dt <= today + datetime.timedelta(days=7)):
+                continue
+            for it in o.get("items", []):
+                if it.get("brand"):
+                    brand_counts[it["brand"]] += 1
+    except Exception: pass
+overused_brands = {b for b, c in brand_counts.items() if c >= 3}  # ≥3 entries in 7d window
+
+out = {
+    "today": today.isoformat(),
+    "window": f"{cutoff.isoformat()} to {(today + datetime.timedelta(days=7)).isoformat()}",
+    "recent_productIds": sorted(recent_pids),
+    "overused_brands": sorted(overused_brands),
+    "brand_counts_top": dict(brand_counts.most_common(10))
+}
+json.dump(out, open("/tmp/webox-variety-context.json", "w"), indent=2)
+print(f"✓ {len(recent_pids)} productIds + {len(overused_brands)} overused brands in {AVOID_DAYS}d window")
+EOF
+```
+
+**Read `/tmp/webox-variety-context.json` and reference it during planning.** Specifically:
+- Any candidate main whose `productId` is in `recent_productIds` is **disqualified** — pick a different main.
+- Any candidate main whose `brand` is in `overused_brands` is **strongly deprioritized** — only pick if no better alternative exists.
+
+If the user's prompt explicitly overrides ("yes I want this exact dish again, I love it"), honor the override and skip the variety gate for that single item — but say so out loud in the plan.
+
 ### Plan output
 
 ```
 📋 Order Plan — Mon May 25 – Fri May 29
 
+Variety context: blocking 14 recently-ordered productIds; deprioritizing brands [Xiangchuan, Lee&Bai] (3+ entries in last 7d)
+
 📅 Mon May 25, Lunch — $30.00 budget
-  - Xiangchuan Kitchen — Mongolian Beef Bento × 1 — $17.45
-  - Northwest China Cuisine — Tea Egg × 3 — $7.35   ($2.45 × 3)
-  - Mediterranean Grill House — Taboulleh Salad × 1 — $5.95
-  Total: $30.75 ❌ → drop one Tea Egg → $28.30 ✓
+  - Special Noodle Soup — Hainan Chicken × 1 — $17.15
+  - Northwest China Cuisine — Tea Egg × 3 — $7.35   ($2.45 × 3, exempt: Appetizer category)
+  - WeBox Fresh — Apple Gala × 1 — $3.95
+  Total: $28.45 ✓
 ```
+
+### Step 3c — VALIDATE plan against variety context (MANDATORY before confirming)
+
+After building the plan but BEFORE presenting it to the user, run:
+
+```bash
+uv run --no-project python3 << 'EOF'
+import json
+PLAN = $PLAN_AS_JSON  # the picked items per slot, e.g.,
+# [{"date":"2026-05-28","meal":"Dinner","items":[
+#    {"productId":499852,"name":"Chiu Chow Brined Duck","brand":"Special Noodle Soup","category":"MainDishes"},
+#    ...
+#  ]}]
+ALLOW_REPEAT_CATEGORIES = {'Beverage', 'Appetizer', 'Snacks', 'Salads'}  # from config.yaml
+ctx = json.load(open("/tmp/webox-variety-context.json"))
+blocked_pids = set(ctx["recent_productIds"])
+overused = set(ctx["overused_brands"])
+
+violations = []
+for slot in PLAN:
+    for it in slot["items"]:
+        if it.get("category") in ALLOW_REPEAT_CATEGORIES:
+            continue  # filler items exempt
+        if it.get("productId") in blocked_pids:
+            violations.append(f"{slot['date']} {slot['meal']}: {it['name']} (productId {it['productId']}) was ordered in the last 7 days")
+        if it.get("brand") in overused:
+            violations.append(f"{slot['date']} {slot['meal']}: brand '{it['brand']}' is overused (3+ recent entries) — pick a different brand if possible")
+if violations:
+    print("❌ VIOLATIONS — replan required:")
+    for v in violations: print(f"  - {v}")
+    exit(1)
+print("✓ variety check passed")
+EOF
+```
+
+If the script exits with violations: **DO NOT proceed**. Re-pick the offending mains with their productIds + (if possible) brands explicitly excluded from candidates. Loop up to **2 replan attempts** per slot. After 2 attempts, fall back to telling the user:
+> Couldn't honor strict variety for [date meal]: only viable option is [item] which was last ordered [N] days ago. Want me to skip this slot or order it anyway?
+
+Wait for explicit user choice.
 
 ---
 
