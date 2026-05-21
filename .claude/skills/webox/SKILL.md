@@ -19,9 +19,10 @@ Read `~/.claude/skills/webox/SITEMAP.md` (full content). It catalogs:
 - Login state probe
 - Useful tiny scripts
 
-Also read the four cached identity files if present (the user has presumably run `/webox-onboard`):
+Also read the cached identity files if present (the user has presumably run `/webox-onboard`):
 - `~/Documents/WeBox/user-profile.json` → `{firstName, lastName, phone, email, timezone}`
-- `~/Documents/WeBox/address-info.json` → `{addressId, kitchenId, timezone}`
+- `~/Documents/WeBox/address-info.json` → `{addressId, userAddressId, kitchenId, timezone, ...}` (`addressId` is canonical, `userAddressId` is the account's link to it)
+- `~/Documents/WeBox/shipping-windows.json` → per-meal `{shippingTimeSectionId, extFormCutoff, daysBefore, ...}`
 - `~/Documents/WeBox/favorites.json` → `{products: [{id, name, brand, category}], unresolvedProductIds, brands, synced_at}`
 - `~/Documents/WeBox/hidden.json` → same shape
 
@@ -70,9 +71,10 @@ The user can ask things like "hide all sugary drinks", "favorite every Korean ma
   const { products, productBrands } = j.data;
   const brandById = new Map(productBrands.map(b => [b.id, b]));
   // 2. Filter products by your criterion — example: sugary drinks
+  //    Note: actual WeBox category for drinks is "Beverage" (PascalCase), not "Drink".
   const matches = products.filter(p => {
     const name = (p.extName?.enUs || '').toLowerCase();
-    return p.category === 'Drink' && /soda|sweet|cola|sugar|boba|bubble|milk tea/.test(name);
+    return p.category === 'Beverage' && /soda|sweet|cola|sugar|boba|bubble|milk tea/.test(name);
   });
   // 3. Loop POST userHide
   const results = [];
