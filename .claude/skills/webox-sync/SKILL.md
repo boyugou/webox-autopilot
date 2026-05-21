@@ -131,7 +131,30 @@ fi
 })()
 ```
 
-Same Bash recipe as 2a — `mv` from `~/Downloads` to `~/Documents/WeBox/hidden.json` with diff logging.
+**Then run Bash immediately:**
+```bash
+sleep 1.5
+F="$HOME/Downloads/<downloadedAs from JS>"
+if [ -f "$F" ]; then
+  python3 << 'EOF'
+import json, os, shutil
+new = json.load(open(os.path.expanduser("$F")))
+new_ids = {p["id"] for p in new["products"]}
+target = os.path.expanduser("~/Documents/WeBox/hidden.json")
+if os.path.exists(target):
+    old = json.load(open(target))
+    old_ids = {p["id"] for p in old.get("products", [])}
+    added = new_ids - old_ids
+    removed = old_ids - new_ids
+    if added: print(f"  + Hidden since last sync: {len(added)}")
+    if removed: print(f"  - Un-hidden since last sync: {len(removed)}")
+shutil.move(os.path.expanduser("$F"), target)
+print(f"✓ hidden.json: {len(new['products'])} products, {len(new['unresolvedProductIds'])} unresolved")
+EOF
+fi
+```
+
+**Reminder:** `~/Downloads` is intermediate only. Every webox-*.json triggered by JS MUST be moved into `~/Documents/WeBox/` immediately. The downstream skills only read from `~/Documents/WeBox/`.
 
 ### 2-fallback — Chunked retrieval (when download bypass fails)
 

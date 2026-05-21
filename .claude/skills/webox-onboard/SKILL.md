@@ -461,7 +461,20 @@ Trigger a separate download (this is the SECOND download — needs Chrome permis
 })()
 ```
 
-Bash recipe identical, target `~/Documents/WeBox/hidden.json`.
+**Then run Bash immediately** — same pattern as 6a:
+
+```bash
+sleep 1.5
+F="$HOME/Downloads/<downloadedAs from JS>"
+if [ -f "$F" ]; then
+  mv "$F" ~/Documents/WeBox/hidden.json
+  python3 -c "import json; d=json.load(open('$HOME/Documents/WeBox/hidden.json')); print('✓ hidden.json written:', len(d['products']), 'products')"
+else
+  echo "Download didn't land — falling back to chunked retrieval."
+fi
+```
+
+**~/Downloads is intermediate only.** Every webox-*.json file you trigger in JS MUST be moved into `~/Documents/WeBox/` by a Bash `mv` step. Leaving the file in `~/Downloads` is broken — downstream skills only read from `~/Documents/WeBox/`.
 
 ### Step 6a-fallback / 6b-fallback — Chunked retrieval (when download silently drops)
 
@@ -630,7 +643,18 @@ If anything is reported UNKNOWN, the file is off-schema — rewrite it from the 
 <!--   "这个超级咸，别再点了" -->
 ```
 
-### 7c. Summary
+### 7c. Cleanup any orphan files left in ~/Downloads
+
+Belt-and-suspenders: occasionally a `mv` in an earlier step might fail silently (disk-full, weird permissions, user already moved the file). Sweep `~/Downloads` for any leftover `webox-*.json` files from this onboard session and delete them — they're already either successfully copied into `~/Documents/WeBox/` or stale.
+
+```bash
+# Any webox-*.json files older than ~5 minutes are stale by now (onboard has finished its writes)
+find ~/Downloads -maxdepth 1 -name "webox-*.json" -print -delete 2>/dev/null
+```
+
+If any were deleted, log them — that's a signal that a previous step's `mv` didn't run cleanly. Compare counts in `~/Documents/WeBox/favorites.json` etc. against what was reported in earlier steps; if mismatched, the user should re-run `/webox-sync` or `/webox-onboard`.
+
+### 7d. Summary
 
 Echo only what CHANGED from defaults — and confirm the per-file counts:
 

@@ -41,9 +41,23 @@ Steps:
 2. Under **"Allowed to automatically download multiple files"**, click **Add**
 3. Enter `[*.]webox.com` and save
 
-Why: the skill writes its data files (favorites, hidden, menu cache, order history) by triggering a Blob download via JS. The file lands in your `~/Downloads`, then Claude Code's Bash moves it into `~/Documents/WeBox/`. Chrome silently blocks the 2nd+ automatic download per origin unless you allow it explicitly.
-
 You only do this once. The permission persists across reinstalls, Chrome restarts, and skill updates.
+
+**How the data flow works (so you know why this is needed):**
+
+```
+WeBox API  →  JS in browser tab  →  Blob download
+                                          │
+                                          ▼
+                              ~/Downloads/webox-*.json   ← intermediate, automatic
+                                          │
+                                          ▼ (Bash mv, run by Claude Code right after)
+                              ~/Documents/WeBox/<file>   ← real destination
+```
+
+Every `webox-*.json` file the skill triggers in your `~/Downloads` is immediately moved by Claude Code's Bash into `~/Documents/WeBox/` (favorites, hidden, menu cache, order history). The file in `~/Downloads` is **transient** — by the time the skill returns control to you, the file has been moved and the `~/Downloads` copy deleted. If for any reason you see stale `webox-*.json` files lingering in `~/Downloads`, you can safely delete them; they aren't read by anything.
+
+Chrome silently blocks the 2nd+ automatic download per origin unless you allow it explicitly — hence this step.
 
 ### 3. Install the skills
 
