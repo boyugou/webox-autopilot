@@ -1,204 +1,202 @@
 ---
 name: webox-sync
-description: One-stop sync from WeBox — refresh local order history (per-week JSON) AND favorites caches for upcoming orderable slots, then display this week and next week's slot calendar. Use when the user says "sync my WeBox", "show my calendar", "refresh favorites", "what's been ordered", "pull latest", or wants to make sure local state is current before ordering.
+description: One-stop API sync — refresh order history, favorites, hidden list, and warm-cache upcoming menus. Then display this week and next week's slot calendar. Use when the user says "sync my WeBox", "show my calendar", "refresh favorites", "what's been ordered", "pull latest".
 ---
 
 # WeBox Sync Skill
 
-One-stop sync for all local WeBox state. Refreshes:
-- **Order history** → `~/Documents/WeBox/orders/YYYY-Www.json` (per-week JSON; cancelled/refunded filtered)
-- **Favorites caches** → `~/Documents/WeBox/menu-cache/YYYY-MM-DD-{Lunch,Dinner}.json` for the next 1–2 orderable slots
+Refreshes all read-only state via API and shows the calendar.
 
-Then displays this week and next week's slot calendar.
+**Inputs:** existing `user-profile.json`, `address-info.json` in `~/Documents/WeBox/` (from `/webox-onboard`).
+**Outputs (refreshed):**
+- `orders/YYYY-Www.json` — per-ISO-week order history (active orders only)
+- `favorites.json` — `{productIdList, brandIdList, synced_at}`
+- `hidden.json` — same shape (Not-Interested list)
+- `menu-cache/YYYY-MM-DD-{Lunch,Dinner}.json` — next 1–2 orderable slots
 
-For URL patterns and DOM selectors, see `~/.claude/skills/webox/SITEMAP.md`.
+All API-based. No DOM scraping. See `~/.claude/skills/webox/SITEMAP.md` for endpoint details.
 
 ---
 
 ## Step 1: Prerequisite Check
 
-Call `tabs_context_mcp`. If no tabs:
-> Claude in Chrome doesn't seem to be connected. Make sure Chrome is running with the [Claude in Chrome extension](https://code.claude.com/docs/en/chrome) enabled.
+```
+tabs_context_mcp({ createIfEmpty: true })
+```
+If a tab group exists, create a fresh tab (`tabs_create_mcp()`) to avoid stale state. Capture the `tabId`. Navigate it to `https://www.webox.com` and verify login:
+```javascript
+({ loggedIn: !!document.querySelector('a.cart.fr') })
+```
+If not logged in: ask user to log in. If `address-info.json` is missing locally: tell the user to run `/webox-onboard` first.
 
 ---
 
-## Step 2: Sync Order History
+## Step 2: Refresh Favorites + Hidden Lists
 
-Navigate to `https://www.webox.com/order/list/normal` and run:
+These change when the user hearts/un-hearts or "Not Interested"-s items in WeBox UI. Quick refresh:
 
 ```javascript
 (async () => {
-  const SEL = '.order-item';
-  let waited = 0;
-  while (document.querySelectorAll(SEL).length === 0 && waited < 10000) {
-    await new Promise(r => setTimeout(r, 300));
-    waited += 300;
-  }
-  const now = new Date();
-  const toFullDate = (md) => {
-    const m = md.match(/(\d{2})\/(\d{2})/); if (!m) return null;
-    let d = new Date(now.getFullYear(), +m[1]-1, +m[2]);
-    if (d - now > 30*86400000) d = new Date(now.getFullYear()-1, +m[1]-1, +m[2]);
-    return d.toISOString().slice(0, 10);
-  };
-  const isoWeek = (iso) => {
-    const d = new Date(iso + 'T00:00:00'); d.setHours(0,0,0,0);
-    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-    const ys = new Date(d.getFullYear(), 0, 1);
-    return `${d.getFullYear()}-W${String(Math.ceil((((d - ys)/86400000)+1)/7)).padStart(2,'0')}`;
-  };
-  const weekMonday = (wk) => {
-    const [y, w] = wk.split('-W').map(Number);
-    const jan4 = new Date(y, 0, 4); const dow = jan4.getDay() || 7;
-    const mon = new Date(jan4); mon.setDate(jan4.getDate() - dow + 1 + (w-1)*7);
-    return mon.toISOString().slice(0, 10);
-  };
-  // Harvest-while-scrolling: dedup by orderId so we capture every order even if
-  // the page virtualizes (mounts/unmounts items as you scroll down).
-  const seen = new Set();
-  const synced = now.toISOString();
-  const weeks = {};
-  const harvest = () => {
-    for (const o of document.querySelectorAll(SEL)) {
-      const orderId = o.querySelector('.order-id')?.innerText?.trim();
-      if (!orderId || seen.has(orderId)) continue;
-      const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
-      if (/refund|cancel/i.test(orderStatus)) { seen.add(orderId); continue; }
-      const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-      const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
-      const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
-      if (!dateLine || !mealLine) continue;
-      const meal = mealLine.match(/^(Lunch|Dinner|HappyHour)/)[1];
-      const items = [...o.querySelectorAll('.product-item')].map(p => {
-        const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
-        const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-        const desc = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
-        const pl = txt.find(l => /^\$[\d.]+/.test(l));
-        return { name, brand: desc?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim(), price: pl ? parseFloat(pl.slice(1)) : null };
-      }).filter(x => x.name);
-      if (!items.length) continue;
-      const fullDate = toFullDate(dateLine);
-      if (!fullDate) continue;
-      const day = dateLine.split(/\s+/)[0];
-      const wk = isoWeek(fullDate);
-      if (!weeks[wk]) weeks[wk] = { week: wk, week_starts: weekMonday(wk), synced_at: synced, orders: [] };
-      weeks[wk].orders.push({ date: fullDate, day, meal, items });
-      seen.add(orderId);
-    }
-  };
-  harvest();
-  const step = Math.max(window.innerHeight * 0.8, 600);
-  let y = 0;
-  let lastSize = seen.size, stable = 0;
-  for (let i = 0; i < 100; i++) {
-    y += step;
-    window.scrollTo(0, y);
-    await new Promise(r => setTimeout(r, 600));
-    harvest();
-    const atBottom = y >= document.body.scrollHeight - window.innerHeight;
-    if (seen.size === lastSize) {
-      if (++stable >= 5 && atBottom) break;
-    } else { stable = 0; }
-    lastSize = seen.size;
-  }
-  return JSON.stringify(weeks);
+  const [fav, hide] = await Promise.all([
+    fetch('/api/fav/my', { credentials: 'include' }).then(r => r.json()),
+    fetch('/api/hide/my', { credentials: 'include' }).then(r => r.json())
+  ]);
+  const now = new Date().toISOString();
+  return JSON.stringify({
+    favorites: { productIdList: fav.data?.productIdList || [], brandIdList: fav.data?.brandIdList || [], synced_at: now },
+    hidden:    { productIdList: hide.data?.productIdList || [], brandIdList: hide.data?.brandIdList || [], synced_at: now }
+  });
 })()
 ```
 
-**Output is directly writable** — keyed by ISO week: `{"2026-W21": {week, week_starts, synced_at, orders: [...]}, ...}`. For each key, write `~/Documents/WeBox/orders/<key>.json` with the value as the file content. Preserve any local entries with `planned: true` that don't appear in the scrape (they're pending checkout from `webox-order`).
-
-**Trust the tool result; don't chunk-read.** Claude Code's terminal may visually truncate large tool outputs at ~1 KB with `[TRUNCATED]` — that's display-only; the agent's tool result contains the full string. Pass it straight to `Write` / `JSON.parse`. Don't loop `slice(0, N)` calls trying to "page through" the data — wasted round-trips.
-
-Per-order schema: `{date, day, meal, items: [{name, brand, price}]}`. Cancelled/refunded are filtered at scrape time and never written.
+**Diff before overwriting.** Read the existing `favorites.json` / `hidden.json`, compute the symmetric diff against the new lists, and surface the changes in the summary (Step 6). Then write the new versions.
 
 ---
 
-## Step 3: Refresh Favorites for Upcoming Orderable Slots
+## Step 3: Refresh Order History (paginated API)
 
-Refresh the per-slot menu-cache for the next 1–2 orderable Lunch slots (and corresponding Dinners if appropriate). This gives the user a snappy first order without waiting on a fresh scrape.
+```javascript
+(async () => {
+  const params = 'client=web&status=Paid%2CPartialRefunded%2CPlanned%2CUnpaid%2CRefunded%2CCancelled%2COnHold&pageSize=10&type=Individual&orderBy=id&desc=true&referenceTypes=GROUP_ORDER_META';
+  const all = [];
+  let pageIndex = 1;
+  while (pageIndex <= 100) {
+    const r = await fetch(`/api/orders/list?${params}&pageIndex=${pageIndex}`, { credentials: 'include' });
+    const j = await r.json();
+    if (j.code !== 1 || !j.data?.result?.length) break;
+    all.push(...j.data.result);
+    if (all.length >= j.data.totalCount) break;
+    pageIndex++;
+  }
+  // Filter to status === "Paid" (active), flatten by package
+  const active = [];
+  for (const r of all) {
+    if (r.order?.status !== 'Paid') continue;
+    for (const pkg of (r.orderPackages || [])) {
+      const items = (pkg.extItems || []).map(it => ({
+        productId: it.productId,
+        productSpecialId: it.productSpecialId,
+        quantity: it.quantity,
+        price: (it.pricePerUnitCents ?? it.priceCents ?? 0) / 100
+      }));
+      active.push({
+        orderId: 'No.' + r.order.id,
+        dateShippingMs: pkg.dateShipping,
+        timeShipping: pkg.timeShipping,
+        total: r.order.totalCharge || 0,
+        items
+      });
+    }
+  }
+  return JSON.stringify({ totalFetched: all.length, activeCount: active.length, orders: active });
+})()
+```
 
-Target dates:
-- **Tomorrow's Lunch** (most likely the next order, cutoff is open)
-- Optionally day-after-tomorrow's Lunch if within the 7-day window
+**Default loop bound:** stop early once you've fetched `history_window_days × 1.5` worth (≈ 30 weeks ≈ 60 pages ≈ 6 seconds). If the user says "pull all my history", remove that bound and fetch all `totalCount` orders.
 
-For each target date+meal:
+### Convert to per-week JSON
 
-1. Navigate the same tab to:
-   ```
-   https://www.webox.com/menu/section/My%20Favorites?date=<DATE>&shippingTime=<MEAL>
-   ```
-2. Run the favorites scrape with redirect detection:
-   ```javascript
-   (async () => {
-     await new Promise(r => setTimeout(r, 1500));
-     // Redirect check — WeBox silently redirects favorites→full menu when cutoff passed
-     const urlOk = /My%20Favorites|My Favorites/.test(location.href);
-     const headerEl = [...document.querySelectorAll('.menu-section-header__title, [class*="section-header__title"]')]
-       .find(e => /My Favorites/i.test((e.innerText || '').trim()));
-     if (!urlOk || !headerEl) {
-       return JSON.stringify({ error: 'redirected', urlOk, headerFound: !!headerEl, url: location.href });
-     }
-     const SEL = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
-     // Harvest-while-scrolling: dedup by (brand, name) — handles virtual scrolling.
-     const collected = new Map();
-     const harvest = () => {
-       for (const el of document.querySelectorAll(SEL)) {
-         const soldOutEl = el.querySelector('.product-menu-top-sold-out-wrapper');
-         if (soldOutEl && getComputedStyle(soldOutEl).display !== 'none') continue;
-         const w = el.querySelector('.product-item-content-wrapper');
-         const name = w?.querySelector('.product-menu-title')?.innerText?.trim();
-         if (!name) continue;
-         const brand = w?.querySelector('.brand-wrapper')?.innerText?.trim();
-         const key = `${brand}|${name}`;
-         if (collected.has(key)) continue;
-         const rating = parseFloat(w?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0]) || null;
-         const price = parseFloat(w?.querySelector('.product-price')?.innerText?.trim().replace('$', '') || '0');
-         const it = { name, brand, price };
-         if (rating !== null) it.rating = rating;
-         collected.set(key, it);
-       }
-     };
-     harvest();
-     const step = Math.max(window.innerHeight * 0.8, 600);
-     let y = 0;
-     let lastSize = collected.size, stable = 0;
-     for (let i = 0; i < 80; i++) {
-       y += step;
-       window.scrollTo(0, y);
-       await new Promise(r => setTimeout(r, 600));
-       harvest();
-       const atBottom = y >= document.body.scrollHeight - window.innerHeight;
-       if (collected.size === lastSize) {
-         if (++stable >= 5 && atBottom) break;
-       } else { stable = 0; }
-       lastSize = collected.size;
-     }
-     const items = [...collected.values()];
-     if (items.length > 600) return JSON.stringify({ error: 'suspect_too_many', count: items.length });
-     return JSON.stringify({ items });
-   })()
-   ```
-3. If the result is `{error: ...}`, the slot's cutoff has likely passed (or the page hiccupped) — skip and move to the next slot.
-4. Otherwise write `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`:
-   ```json
-   {
-     "cached_at": "ISO-8601",
-     "date": "<DATE>",
-     "meal": "<MEAL>",
-     "sources": ["favorites"],
-     "items": [
-       { "brand": "...", "name": "...", "price": 14.95, "rating": 4.5, "in_favorites": true, "categories": ["favorites"] }
-     ]
-   }
-   ```
+For each active order, compute the ISO week of its `dateShippingMs`, group, and write `~/Documents/WeBox/orders/YYYY-Www.json` with schema:
 
-Skip this whole step if the user explicitly said "just sync orders, don't touch favorites".
+```json
+{
+  "week": "2026-W21",
+  "week_starts": "2026-05-18",
+  "synced_at": "2026-05-21T14:30:00Z",
+  "orders": [
+    {
+      "date": "2026-05-21",
+      "day": "Thu",
+      "meal": "Lunch",
+      "orderId": "No.3259401",
+      "total": 21.95,
+      "items": [
+        { "productId": 499852, "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "price": 17.45, "quantity": 1 }
+      ]
+    }
+  ]
+}
+```
+
+Per-week file ISO-week computation (JS):
+```javascript
+function isoWeek(d) {
+  const dt = new Date(d); dt.setHours(0,0,0,0);
+  dt.setDate(dt.getDate() + 4 - (dt.getDay() || 7));
+  const ys = new Date(dt.getFullYear(), 0, 1);
+  return `${dt.getFullYear()}-W${String(Math.ceil((((dt - ys) / 86400000) + 1) / 7)).padStart(2,'0')}`;
+}
+```
+
+**Merge semantics:** preserve any local entries with `planned: true` (those are pending checkouts written by `webox-order` before placement). Overwrite all other entries.
+
+**Resolving product names:** the orders API returns `productId` but not the human-readable name. Use the menu cache from Step 4 below as a lookup. For older orders whose products are no longer in any current menu cache, use `"<unknown>"` for `name` (productId alone is enough for variety tracking; the user can see the order on WeBox itself if they want details).
 
 ---
 
-## Step 4: Display the Active Window
+## Step 4: Warm-Cache Upcoming Menus
 
-Load this week + next week's per-week JSON files. Display Mon–Fri unless the user asks for weekends:
+Identify the next 1–2 orderable Lunch slots (and corresponding Dinners if within the 7-day window). For each, fetch the menu via API. Loop:
+
+```javascript
+(async (date, meal) => {
+  const addrId = /* from address-info.json */;
+  const r = await fetch(`/api/productSpecials/v8/address/${addrId}/date/${date}`, { credentials: 'include' });
+  const j = await r.json();
+  if (j.code !== 1) return JSON.stringify({ error: 'menu fetch failed', date, meal, code: j.code });
+  const specialsKey = meal.toLowerCase() + 'Specials';  // lunchSpecials | dinnerSpecials | happyHourSpecials
+  const specials = j.data[specialsKey];
+  const { products, productBrands } = j.data;
+  const productById = new Map(products.map(p => [p.id, p]));
+  const brandById = new Map(productBrands.map(b => [b.id, b]));
+  const favIds = new Set(/* from favorites.json */);
+  const hideIds = new Set(/* from hidden.json */);
+  let kitchenId = null, shippingTimeSectionId = null;
+  const items = specials
+    .filter(s => s.stockStatus !== 'outofstock')
+    .map(s => {
+      const p = productById.get(s.productId);
+      if (!p || hideIds.has(p.id)) return null;
+      kitchenId = kitchenId || s.kitchenId;
+      shippingTimeSectionId = shippingTimeSectionId || s.shippingTimeSectionId;
+      return {
+        productSpecialId: s.id, productId: p.id, portionId: s.portionId, cutoffTime: s.cutoffTime,
+        name: p.extName?.enUs,
+        brand: brandById.get(p.brandId)?.extName?.enUs,
+        price: s.price,
+        rating: p.averageRating || null,
+        category: p.category,
+        in_favorites: favIds.has(p.id),
+        dietary: {
+          glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
+          nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
+        }
+      };
+    })
+    .filter(Boolean);
+  return JSON.stringify({ date, meal, kitchenId, shippingTimeSectionId, items });
+})('2026-05-22', 'Lunch')
+```
+
+Write each to `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`:
+```json
+{
+  "cached_at": "ISO-8601",
+  "date": "2026-05-22",
+  "meal": "Lunch",
+  "kitchenId": 12838,
+  "shippingTimeSectionId": 27274,
+  "items": [ ... ]
+}
+```
+
+Skip this step if the user explicitly said "just sync orders, don't touch menus".
+
+---
+
+## Step 5: Display the Active Window
+
+Load `orders/YYYY-Www.json` for this week and next week. Display Mon–Fri (include weekends only if the user asked):
 
 ```
 📅 WeBox Order Calendar — Week of May 18 & May 25
@@ -210,39 +208,39 @@ This week (May 18–22)
               Dinner —   not ordered
   Wed May 20  Lunch  ⏰  cutoff passed
   Thu May 21  Lunch  ✅
-  Fri May 22  Lunch  ✅  Mongolian Beef bento, Tea Egg ×2, Taboulleh
+  Fri May 22  Lunch  ✅
               Dinner —   not ordered
 
 Next week (May 25–29)
   Mon May 25  Lunch  ○   available
               Dinner ○   available
-  Tue May 26  Lunch  ○   available
   ...
 ```
 
-Legend: ✅ ordered (active) | 📝 planned (from webox-order, not yet placed) | ○ open | ⏰ cutoff passed | 🔒 outside 7-day window | — not ordered
-
-Only `✅` and `📝` block a slot.
+Legend: ✅ ordered (active) | 📝 planned (from webox-order, not yet placed) | ○ open | ⏰ cutoff passed | 🔒 outside 7-day window | — not ordered. Only ✅ and 📝 block a slot.
 
 ---
 
-## Step 5: Summary + Offer
+## Step 6: Summary + Offer
 
 ```
-This week: 5/10 slots ordered.
+✅ Synced.
+  Favorites:   131 items (+2 / -1 vs last sync)
+  Hidden:      180 items
+  Orders:      407 active orders across 41 weeks
+  Menus:       refreshed Fri 05/22 Lunch (X items), Mon 05/25 Lunch (Y items)
+
+This week: 4/10 slots ordered.
 Next week: 0/10 slots ordered — 7 open within the 7-day window.
-Favorites refreshed: Fri 05/22 Lunch (105 items), Mon 05/25 Lunch (98 items).
 ```
 
-If open slots exist within the 7-day window, offer:
+If favorites or hidden CHANGED since last sync, surface the diff:
 ```
-Want me to order the remaining open slots? Just say which days or meals.
+  + Hearted: "Baby Mixed Greens Salad (Northwest China Cuisine)"
+  - Unhearted: "Spicy Hot Pot"
 ```
 
----
-
-## Context Window Discipline
-
-`webox-order` reads order history for variety tracking — it loads only week files within `history_window_days` (default 28). Older files stay on disk as a long-term record.
-
-This skill's display loads only the current and next week by default. The user can ask "show me last month" / "show me everything" and the skill loads more week files as needed.
+Then offer:
+```
+Want me to order the open slots? Just say which days or meals.
+```

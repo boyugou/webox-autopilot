@@ -1,64 +1,114 @@
 ---
 name: webox
-description: General WeBox knowledge loader for ad-hoc tasks. Loads URL patterns, DOM selectors, and useful JavaScript snippets, then lets the agent decide how to handle the request. Use for free-form WeBox questions like "what's available for lunch tomorrow", "check my cart", "search for noodles on Friday", "show what's in my favorites" — anything that doesn't fit the dedicated webox-order / webox-favorite / webox-sync / webox-onboard / webox-reset skills.
+description: General WeBox knowledge loader for ad-hoc tasks. Loads the API + URL + DOM reference, then lets the agent improvise. Use for free-form WeBox questions like "what's available for lunch tomorrow", "check my cart", "search for noodles on Friday", "hide all sugary drinks" — anything that doesn't fit the dedicated webox-order / webox-favorite / webox-sync / webox-onboard / webox-reset skills.
 ---
 
 # WeBox General Skill (Knowledge Loader)
 
-This skill is invoked for **ad-hoc WeBox tasks** that don't map cleanly to one of the dedicated skills. It loads environment knowledge and lets the agent improvise.
+Invoked for ad-hoc WeBox tasks that don't map cleanly to one of the dedicated skills.
 
-## Step 1: Load WeBox knowledge
+## Step 1: Load Knowledge
 
 Read `~/.claude/skills/webox/SITEMAP.md` (full content). It catalogs:
-- All URL patterns (favorites, cuisine categories, food-type categories, search via `queryText`, checkout, order history)
-- DOM selectors for menu cards, modals, cart, qty stepper, order list, checkout
-- Two checkout paths (Path A: cart icon → /checkout → Place Order; Path B: side drawer Quick Checkout)
+- **The full API surface** (prefer this over DOM): menu, favorites, hidden, order history, Place Order, "Not Interested", etc.
+- URL patterns (favorites, cuisine categories, search via `queryText`, checkout, order history)
+- DOM selectors (legacy / fallback)
 - Login state probe
-- Background-tab caveats (sequential scraping is the safe contract)
-- Multi-window limitation (Claude in Chrome can't open new windows)
-- Useful tiny scripts (search, cart inspect, clear cart)
+- Useful tiny scripts
 
-## Step 2: Prerequisite check
+Also read the four cached identity files if present (the user has presumably run `/webox-onboard`):
+- `~/Documents/WeBox/user-profile.json` → `{firstName, lastName, phone, email, timezone}`
+- `~/Documents/WeBox/address-info.json` → `{addressId, kitchenId, timezone}`
+- `~/Documents/WeBox/favorites.json` → `{productIdList, brandIdList}`
+- `~/Documents/WeBox/hidden.json` → `{productIdList, brandIdList}`
 
-1. Call `tabs_context_mcp`. If no tabs, ask the user to enable [Claude in Chrome](https://code.claude.com/docs/en/chrome).
-2. Verify WeBox login: navigate to `https://www.webox.com` and check for `a.cart.fr` (only present when logged in).
+Plus `~/Documents/WeBox/preferences.md` for the user's preferences.
 
-If the user has a `~/Documents/WeBox/preferences.md`, you may also consult it for context (budget, dietary, etc.) — but this skill doesn't require onboarding.
+## Step 2: Prerequisite Check
 
-## Step 3: Use judgment
+1. Call `tabs_context_mcp({ createIfEmpty: true })`. If a tab group exists, create a fresh tab to avoid stale state.
+2. Verify WeBox login by navigating to `https://www.webox.com` and checking for `a.cart.fr`.
+
+If the user has no `address-info.json`, suggest they run `/webox-onboard` first for any ordering-related task. Ad-hoc reads can usually proceed without it.
+
+## Step 3: Use Judgment (API-first patterns)
 
 You now have:
-- Full WeBox URL and DOM knowledge (SITEMAP.md)
+- Full WeBox API knowledge (SITEMAP.md)
 - A logged-in Chrome session
+- The user's identity caches
 - The user's specific request
 
-Decide how to handle it. Common patterns:
+### Common patterns
 
 | User says | Recommended approach |
 |---|---|
-| "What's available for dinner Friday?" | Navigate to favorites URL for Friday Dinner, scrape, summarize |
-| "Search for noodles on Tuesday" | Navigate to `?date=...&queryText=noodles`, list top results |
-| "What's in my cart?" | Navigate to `/checkout` via `a.cart.fr` click, list line items |
-| "Clear my cart" | Use the clear-cart script from SITEMAP.md |
-| "Open the WeBox order history page" | Navigate to `/order/list/normal` |
-| "Show me my last 3 orders" | Scrape `/order/list/normal`, return top 3 active entries |
-| "Cancel my order #123" | This requires user interaction — open `/order/list/normal` and direct the user to cancel manually (WeBox confirms cancellation via a modal we don't automate) |
+| "What's available for dinner Friday?" | `GET /api/productSpecials/v8/address/<A>/date/<D>`, extract `dinnerSpecials`, join with `products`, summarize |
+| "Search for noodles on Tuesday" | Same fetch + filter `items` by `name` matching "noodle" |
+| "What's in my cart?" | `JSON.parse(localStorage.getItem('CartService_cartItemArrMap'))` — cart is fully client-side |
+| "Clear my cart" | `localStorage.removeItem('CartService_cartItemArrMap')` + reload |
+| "Show my last 5 orders" | `GET /api/orders/list?pageSize=5&pageIndex=1` |
+| "Cancel my order #N" | Try the templated cancel endpoints in SITEMAP; verify with the user before firing |
+| "Hide all sugary drinks" | See "Bulk operations" below |
+| "What are my favorites?" | `GET /api/fav/my` + join with the next-day's menu for names |
 
-**JS-first principle still applies** — use URL navigation and JS selectors from SITEMAP.md rather than slow image+coordinate clicks.
+### Bulk operations (API loop)
 
-## Step 4: When to hand off to a dedicated skill
+The user can ask things like "hide all sugary drinks", "favorite every Korean main", "un-hide everything I hid last month". These are scriptable loops:
 
-If the user's request matches a dedicated skill's job, suggest invoking that skill explicitly rather than improvising:
+**Bulk hide ("Not Interested") matching a filter:**
+```javascript
+(async () => {
+  // 1. Fetch menu for any date to get the products catalog
+  const addrId = /* from address-info.json */;
+  const date = /* tomorrow or any orderable date */;
+  const r = await fetch(`/api/productSpecials/v8/address/${addrId}/date/${date}`, { credentials: 'include' });
+  const j = await r.json();
+  const { products, productBrands } = j.data;
+  const brandById = new Map(productBrands.map(b => [b.id, b]));
+  // 2. Filter products by your criterion — example: sugary drinks
+  const matches = products.filter(p => {
+    const name = (p.extName?.enUs || '').toLowerCase();
+    return p.category === 'Drink' && /soda|sweet|cola|sugar|boba|bubble|milk tea/.test(name);
+  });
+  // 3. Loop POST userHide
+  const results = [];
+  for (const p of matches) {
+    const r2 = await fetch('/api/userHide/addHide?client=web', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hideType: 'Product', hideId: p.id })
+    });
+    const j2 = await r2.json();
+    results.push({ id: p.id, name: p.extName?.enUs, brand: brandById.get(p.brandId)?.extName?.enUs, code: j2.code });
+  }
+  return JSON.stringify({ matchedCount: matches.length, results });
+})()
+```
 
-- Wants to **place an order** → `/webox-order` (smart default, full curated menu) or `/webox-favorite` (favorites-only narrow)
-- Wants to **view/sync their order calendar** → `/webox-sync`
+**Reverse (un-hide):** same loop with `POST /api/userHide/removeHide`.
+
+**Bulk favorite/unfavorite:** `POST /api/favProducts/<id>?client=web` / DELETE on same path.
+
+**Always confirm before bulk writes.** Show the user the matched items first ("about to hide 14 sugary drinks: …"), wait for "yes", then loop. Don't auto-execute large mutations without confirmation.
+
+### JS-first principle still applies
+
+Use API + JS selectors over slow image+coordinate clicks. Computer-use is the absolute last resort.
+
+## Step 4: When to Hand Off
+
+If the user's request matches a dedicated skill's job, suggest invoking it explicitly:
+
+- Wants to **place an order** → `/webox-order` (smart default) or `/webox-favorite` (narrow)
+- Wants to **view/sync the calendar** → `/webox-sync`
 - Wants to **set up or update preferences** → `/webox-onboard`
 - Wants to **wipe local data** → `/webox-reset`
 
-For everything else — search, inspect, browse, ad-hoc queries — handle it inline using SITEMAP.md.
+For everything else — search, inspect, browse, bulk hide/favorite — handle it inline using SITEMAP.md.
 
-## Step 5: Don't write to local files
+## Step 5: Don't Write to Local Files Without Reason
 
-This skill is read-only by default. Don't modify `~/Documents/WeBox/` files (preferences, order-history, item-reviews, menu-cache) unless the user explicitly asks for it (e.g., "save this dish as a 5/5 review" — that would map to appending to `item-reviews.md`).
+This skill is read-only by default. Don't modify `~/Documents/WeBox/` files (preferences, profile, orders, reviews, menu-cache) unless the user explicitly asks for it. If they do (e.g., "save this dish as 5/5"), append to `item-reviews.md` carefully.
 
-Mutations belong in the dedicated skills which have proper state-management logic.
+Mutations on WeBox (`POST /api/userHide/addHide`, `POST /api/favProducts/<id>`, etc.) DO write to WeBox's database — always confirm with the user before firing bulk loops.

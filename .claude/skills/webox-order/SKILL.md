@@ -1,373 +1,179 @@
 ---
 name: webox-order
-description: Order food from WeBox autonomously. Default to a curated full-menu scrape (favorites + preferred_cuisines + filler categories like Drink/Side/Snack) so selection sees broad options, then plans within the user's budget, adds to cart via per-item URL search, and checks out. Use for normal ordering requests like "order my lunch for tomorrow", "order lunch and dinner next week", "get me 5 milks across this week". For favorites-only narrow scope, use webox-favorite. For exhaustive every-category scrape, set category_mode=all in preferences.
+description: Order food from WeBox autonomously via the WeBox API. Fetches the full menu in one call, plans within the user's budget honoring preferences/dietary/reviews, then places orders via POST /api/orders. Use for normal ordering — "order my lunch for tomorrow", "order lunch and dinner next week", "get me 5 milks across this week". For favorites-only narrow scope, use webox-favorite.
 ---
 
 # WeBox Order Skill
 
-The primary ordering skill. Default scope = **curated full menu** (favorites + preferred_cuisines + filler categories). Use `webox-favorite` for favorites-only narrow scope. Set `category_mode: all` in preferences for exhaustive every-category scrape (slow, rarely needed).
+**Fully API-based.** Fetches menu via `/api/productSpecials/v8/...`, plans, places via `POST /api/orders`. No DOM scraping, no cart manipulation. See `~/.claude/skills/webox/SITEMAP.md` for the full API reference.
 
-Data directory: `~/Documents/WeBox/` (visible in Finder, plain text + JSON).
-
-## JS-First Principle (strict)
-
-EVERY operation has a verified JS or URL-navigation path. Reach for the first that applies:
-1. **URL navigation** — change page state by navigating, not clicking (e.g., `?queryText=NAME` for item search)
-2. **JS selector + click/scroll** — for DOM interactions (cart, qty, checkout, modal)
-3. **`find` tool** — fallback when a JS selector is unknown
-4. **Computer use (screenshot + coordinate click)** — last resort only, for visually complex modals with 5+ option groups
-
-Slow image+coordinate operations are bugs to fix in this skill, not workarounds. See `~/.claude/skills/webox/SITEMAP.md` for the full DOM reference and URL catalog.
+Data directory: `~/Documents/WeBox/`
 
 ## Defaults
 
 - **Meal types:** When not specified, order both **Lunch and Dinner** per day.
-- **Weekends:** Skip Saturday and Sunday for multi-day ranges unless asked.
-- **Confirmation mode:** Default `auto` (order without asking, pause only on errors). Set `confirm_before_order: true` for plan-first mode.
+- **Weekends:** Skip Sat/Sun for multi-day ranges unless asked.
+- **Confirmation mode:** `auto` by default. Set `confirm_before_order: true` for plan-first mode.
 
 ## WeBox Constraints
 
-- **7-day window:** Can only order up to 7 days ahead.
-- **Meal cutoffs:** Lunch has a mid-morning cutoff. Skip slots where cutoff has passed.
-- **Budget per slot:** Each date+meal is a separate checkout.
+- **7-day window:** Orders up to 7 days ahead only.
+- **Meal cutoffs:** Slots have order cutoffs; the menu API simply won't return a slot once its cutoff has passed.
+- **One slot = one POST:** each date+meal is a separate order.
 
 ---
 
 ## Step 0: Prerequisite Check
 
-1. **Chrome connected?** Call `tabs_context_mcp`. If no tabs, stop:
-   > Claude in Chrome doesn't seem to be connected. Make sure Chrome is running with the [Claude in Chrome extension](https://code.claude.com/docs/en/chrome) enabled.
+```
+tabs_context_mcp({ createIfEmpty: true })
+```
+Capture the `tabId`. Navigate it to `https://www.webox.com` (login probe). Verify `a.cart.fr` exists.
 
-2. **Preferences exist?** Check `~/Documents/WeBox/preferences.md`. If missing:
-   > You haven't set up WeBox yet. Run `/webox-onboard` first — takes about 2 minutes.
+Check that **all four identity files** exist in `~/Documents/WeBox/`:
+- `preferences.md` · `user-profile.json` · `address-info.json` · `favorites.json`
+
+If any is missing:
+> You haven't set up WeBox yet. Run `/webox-onboard` first — takes about 2 minutes.
 
 ---
 
 ## Step 1: Load Local State
 
-### 1a. Preferences
-Read `~/Documents/WeBox/preferences.md`. Extract:
-- `budget`, `budget_mode`, `validate_budget`
-- `confirm_before_order`, `default_meals`, `skip_weekends`
-- `avoid_repeat_days` (default 7), `history_window_days` (default 28)
-- `allow_repeat_categories`, `allow_repeat_patterns` (fillers exempt from variety rules)
-- `category_mode` (curated | whitelist | blacklist | all), `category_list`
-- Dietary restrictions, allergens, preferred/avoided cuisines, drinks
+### 1a. Preferences (`preferences.md`)
+Extract `budget`, `budget_mode`, `validate_budget`, `confirm_before_order`, `default_meals`, `skip_weekends`, `avoid_repeat_days` (default 7), `history_window_days` (default 28), `allow_repeat_categories`, `allow_repeat_patterns`, dietary restrictions, allergens, preferred/avoided cuisines, food likes/dislikes, drink preferences.
 
-### 1b. Item reviews
-Read `~/Documents/WeBox/item-reviews.md` if it exists. Used in Step 4 for selection bias.
+### 1b. Identity caches (JSON)
+- `user-profile.json` → `{firstName, lastName, phone, email, timezone}` (for Place Order body)
+- `address-info.json` → `{addressId, kitchenId, timezone}` (for Place Order body and menu URL)
+- `favorites.json` → `productIdList` Set for in-favorites bias
+- `hidden.json` → `productIdList` Set to filter out items the user marked "Not Interested"
 
-### 1c. Order history (per-week JSON)
-Order history lives in `~/Documents/WeBox/orders/YYYY-Www.json` (one ISO-week file per week). Load only the week files that overlap `history_window_days` (default ~4 weeks back + current/next week). Don't load the entire directory.
+### 1c. Item reviews (`item-reviews.md`)
+Heavily injected into Step 4 selection.
 
-Schema per file:
-```json
-{
-  "week": "2026-W21",
-  "week_starts": "2026-05-18",
-  "synced_at": "2026-05-21T14:30:00Z",
-  "orders": [
-    {
-      "date": "2026-05-18", "day": "Mon", "meal": "Lunch",
-      "items": [
-        { "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "price": 17.45 }
-      ]
-    }
-  ]
-}
-```
+### 1d. Order history (per-week JSON)
+Read only week files overlapping `history_window_days` (typically last 4 weeks + current/next). Two purposes:
+- **Slot occupancy:** any `✅` (active) or `📝 planned` entry blocks that slot
+- **Variety tracking:** productIds in recent entries → avoid repeating (mains only)
 
-**Cancelled/refunded orders are filtered at sync time** — they never appear in these files. Anything present = real active or planned order, blocks its slot.
-
-**Planned orders** (written by Step 6 before checkout, not yet placed) — when added to a week file, the agent sets a `planned: true` field on that entry. After checkout the field is removed. This lets downstream skills distinguish "I told the user we'd order this" from "this is in WeBox".
-
-If the latest week file's `synced_at` is more than 1 day old → re-sync in Step 2.
+If the latest week file's `synced_at` is more than 1 day old → re-sync via `/webox-sync` first (or inline the order-history-fetch JS from webox-sync Step 3).
 
 ---
 
-## Step 2: Sync Order History (if stale)
+## Step 2: Fetch Menu for Each Target Slot
 
-*Skip if the most recent week file's `synced_at` is within the last day.*
+For each `(date, meal)` the user wants:
 
-Navigate to `https://www.webox.com/order/list/normal` and run the scraper below. **Output is compact by design** — only `{name, brand, price}` per item (no item descriptions, allergens, or marketing copy). A typical 40-order history fits comfortably in one tool result, avoiding display truncation.
+### 2a. Menu cache check
+Read `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`. If `cached_at < 60 minutes ago`, reuse it.
 
-```javascript
-(async () => {
-  // Wait for first .order-item to render (up to 10s)
-  const SEL = '.order-item';
-  let waited = 0;
-  while (document.querySelectorAll(SEL).length === 0 && waited < 10000) {
-    await new Promise(r => setTimeout(r, 300));
-    waited += 300;
-  }
-  // Helpers
-  const now = new Date();
-  const toFullDate = (md) => {
-    const m = md.match(/(\d{2})\/(\d{2})/); if (!m) return null;
-    let d = new Date(now.getFullYear(), +m[1]-1, +m[2]);
-    if (d - now > 30*86400000) d = new Date(now.getFullYear()-1, +m[1]-1, +m[2]);
-    return d.toISOString().slice(0, 10);
-  };
-  const isoWeek = (iso) => {
-    const d = new Date(iso + 'T00:00:00'); d.setHours(0,0,0,0);
-    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-    const ys = new Date(d.getFullYear(), 0, 1);
-    return `${d.getFullYear()}-W${String(Math.ceil((((d - ys)/86400000)+1)/7)).padStart(2,'0')}`;
-  };
-  const weekMonday = (wk) => {
-    const [y, w] = wk.split('-W').map(Number);
-    const jan4 = new Date(y, 0, 4); const dow = jan4.getDay() || 7;
-    const mon = new Date(jan4); mon.setDate(jan4.getDate() - dow + 1 + (w-1)*7);
-    return mon.toISOString().slice(0, 10);
-  };
-  // Harvest-while-scrolling: dedup by orderId so we capture every order even if the
-  // page virtualizes (mounts/unmounts items as you scroll). seen set prevents reprocessing.
-  const seen = new Set();
-  const synced = now.toISOString();
-  const weeks = {};
-  const harvest = () => {
-    for (const o of document.querySelectorAll(SEL)) {
-      const orderId = o.querySelector('.order-id')?.innerText?.trim();
-      if (!orderId || seen.has(orderId)) continue;
-      const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
-      if (/refund|cancel/i.test(orderStatus)) { seen.add(orderId); continue; }
-      const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-      const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
-      const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
-      if (!dateLine || !mealLine) return;
-      const meal = mealLine.match(/^(Lunch|Dinner|HappyHour)/)[1];
-      const items = [...o.querySelectorAll('.product-item')].map(p => {
-        const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
-        const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-        const desc = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
-        const pl = txt.find(l => /^\$[\d.]+/.test(l));
-        return { name, brand: desc?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim(), price: pl ? parseFloat(pl.slice(1)) : null };
-      }).filter(x => x.name);
-      if (!items.length) continue;
-      const fullDate = toFullDate(dateLine);
-      if (!fullDate) continue;
-      const day = dateLine.split(/\s+/)[0];
-      const wk = isoWeek(fullDate);
-      if (!weeks[wk]) weeks[wk] = { week: wk, week_starts: weekMonday(wk), synced_at: synced, orders: [] };
-      weeks[wk].orders.push({ date: fullDate, day, meal, items });
-      seen.add(orderId);
-    }
-  };
-  harvest();
-  // Incremental scroll — ~80% viewport per step so each row passes through view and
-  // triggers lazy-load. Jumping to scrollHeight can skip intermediate items entirely.
-  const step = Math.max(window.innerHeight * 0.8, 600);
-  let y = 0;
-  let lastSize = seen.size, stable = 0;
-  for (let i = 0; i < 100; i++) {
-    y += step;
-    window.scrollTo(0, y);
-    await new Promise(r => setTimeout(r, 600));
-    harvest();
-    const atBottom = y >= document.body.scrollHeight - window.innerHeight;
-    if (seen.size === lastSize) {
-      if (++stable >= 5 && atBottom) break;
-    } else { stable = 0; }
-    lastSize = seen.size;
-  }
-  return JSON.stringify(weeks);
-})()
-```
-
-**Output format is directly writable.** The result is an object keyed by ISO week — `{"2026-W21": {week, week_starts, synced_at, orders}, "2026-W22": {...}}`. The agent iterates the keys and writes each week as `~/Documents/WeBox/orders/<key>.json` with the value as the file content. No post-processing needed.
-
-**Trust the tool result.** Claude Code's terminal may visually truncate large tool outputs at ~1 KB with `[TRUNCATED]` — that's display-only; the agent's tool result contains the full string. Pass the full JSON straight to `Write` / `JSON.parse`. Don't waste round-trips on `window.__x.slice(...)` chunked re-reads.
-
-Per-order schema is intentionally minimal — `{date, day, meal, items: [{name, brand, price}]}`. Dropped: `orderId`, `status`, `total`, `isActive`. We only return active orders (cancelled/refunded filtered at scrape time), so `status` and `isActive` are constants. `total` on a subsidized account is always $0. `orderId` isn't needed for variety tracking or slot occupancy; if the agent needs to dedup against an existing local file, use `date+meal+first item name` as the key.
-
-For each scraped order:
-1. Convert `"Mon 05/18"` to a full ISO date using the current year (or previous year if the resulting date is in the future).
-2. Compute the ISO week → `YYYY-Www`.
-3. Read or create `~/Documents/WeBox/orders/<YYYY-Www>.json`.
-4. Dedupe by `date+meal+first item name` (orderId is no longer in the output). Preserve any local `planned: true` entries.
-5. Update `synced_at` on every touched week file.
-
----
-
-## Step 3: Build the Menu (curated full menu by default)
-
-For each meal slot needing menu data:
-
-### 3a. Cache check
-Read `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`. If `cached_at < 60 min ago` AND its `sources` covers what you'd scrape, use it; skip to Step 4.
-
-### 3b. Choose what to scrape based on `category_mode`
-
-| `category_mode` | Behavior |
-|---|---|
-| `curated` (default) | Scrape favorites + `preferred_cuisines` + filler categories (`Drink, Side, Snack, Dairy & Eggs, Produce`). ~7 scrapes total, ~35s. |
-| `whitelist` | Scrape favorites + only categories in `category_list`. |
-| `blacklist` | Scrape favorites + all categories EXCEPT those in `category_list`. ~25 scrapes, slow. |
-| `all` | Scrape favorites + every category (33 total). ~150s. Only for "show me everything". |
-
-Always include `preferred_cuisines`. Always skip `cuisines_to_avoid`. If user's prompt requests a specific cuisine ("I want Thai today"), add it to the scrape set even if the filter would exclude it.
-
-### 3c. Scrape sequentially in one tab
-
-**Sequential, one tab, foreground.** Parallel multi-tab scrapes return partial results due to lazy-load behavior in background tabs (verified). The wall-time cost is acceptable (~5s per scrape).
-
-For each source (favorites + each category):
-1. Navigate the tab to the URL. See `SITEMAP.md` for URL patterns:
-   - Favorites: `/menu/section/My%20Favorites?date=X&shippingTime=Y` (only `My%20Favorites` works with `/menu/section/`)
-   - Cuisines: `/?date=X&shippingTime=Y&objType=CUISINE&objId=NAME&objName=NAME` (Chinese, Japanese, etc.)
-   - Food types: `/?date=X&shippingTime=Y&objType=CATEGORY&objId=<NUM>&objName=NAME` (Drink, Side, etc. — numeric ID; discover via SITEMAP.md snippet if unknown)
-2. Run the smart-scroll scrape JS (see SITEMAP.md or below).
-
-⚠️ **Anti-pattern:** `/menu/section/Chinese` silently falls back to favorites. Always use the root URL with query params for non-favorites categories.
-
-### 3d. Menu scrape JS
+### 2b. Fresh fetch via API (~1s per slot)
 
 ```javascript
 (async () => {
-  await new Promise(r => setTimeout(r, 1500));
-  // Redirect detection for favorites pages — WeBox redirects favorites→full menu
-  // when the target slot's cutoff has passed. Check both URL and the actual
-  // rendered "My Favorites" header element (DOM is ground truth).
-  const expectFavorites = location.href.includes('menu/section');
-  if (expectFavorites) {
-    const urlOk = /My%20Favorites|My Favorites/.test(location.href);
-    const headerEl = [...document.querySelectorAll('.menu-section-header__title, [class*="section-header__title"]')]
-      .find(e => /My Favorites/i.test((e.innerText || '').trim()));
-    if (!urlOk || !headerEl) {
-      return JSON.stringify({ error: 'redirected_from_favorites', urlOk, headerFound: !!headerEl, url: location.href });
-    }
-  }
-  const SEL = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
-  // Wait for first render
-  let waited = 0;
-  while (document.querySelectorAll(SEL).length === 0 && waited < 10000) {
-    await new Promise(r => setTimeout(r, 300));
-    waited += 300;
-  }
-  // Harvest-while-scrolling: dedup by (brand, name) so we capture every item across
-  // the journey even if the page virtualizes (mounts/unmounts items as you scroll).
-  // Jumping to scrollHeight can skip intermediate items entirely on classic UI.
-  const collected = new Map();
-  const harvest = () => {
-    for (const el of document.querySelectorAll(SEL)) {
-      const soldOutEl = el.querySelector('.product-menu-top-sold-out-wrapper');
-      if (soldOutEl && getComputedStyle(soldOutEl).display !== 'none') continue;
-      const w = el.querySelector('.product-item-content-wrapper');
-      const name = w?.querySelector('.product-menu-title')?.innerText?.trim();
-      if (!name) continue;
-      const brand = w?.querySelector('.brand-wrapper')?.innerText?.trim();
-      const key = `${brand}|${name}`;
-      if (collected.has(key)) continue;
-      const rating = parseFloat(w?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0]) || null;
-      const price = parseFloat(w?.querySelector('.product-price')?.innerText?.trim().replace('$', '') || '0');
-      const item = { name, brand, price };
-      if (rating !== null) item.rating = rating;
-      collected.set(key, item);
-    }
-  };
-  harvest();
-  // Incremental scroll — ~80% viewport per step so each row passes through view
-  const step = Math.max(window.innerHeight * 0.8, 600);
-  let y = 0;
-  let lastSize = collected.size, stable = 0;
-  for (let i = 0; i < 80; i++) {
-    y += step;
-    window.scrollTo(0, y);
-    await new Promise(r => setTimeout(r, 600));
-    harvest();
-    const atBottom = y >= document.body.scrollHeight - window.innerHeight;
-    if (collected.size === lastSize) {
-      if (++stable >= 5 && atBottom) break;
-    } else { stable = 0; }
-    lastSize = collected.size;
-  }
-  const items = [...collected.values()];
-  if (expectFavorites && items.length > 250) {
-    return JSON.stringify({ error: 'suspect_redirect', count: items.length });
-  }
-  return JSON.stringify({ items });
+  const addrId = /* from address-info.json */;
+  const date = '<YYYY-MM-DD>';
+  const meal = '<Lunch|Dinner|HappyHour>';
+  const r = await fetch(`/api/productSpecials/v8/address/${addrId}/date/${date}`, { credentials: 'include' });
+  const j = await r.json();
+  if (j.code !== 1) return JSON.stringify({ error: 'menu_fetch_failed', code: j.code, msg: j.msg });
+  const specialsKey = meal.toLowerCase() + 'Specials';
+  const specials = j.data[specialsKey] || [];
+  const { products, productBrands } = j.data;
+  const productById = new Map(products.map(p => [p.id, p]));
+  const brandById   = new Map(productBrands.map(b => [b.id, b]));
+  const favIds  = new Set(/* favorites.json productIdList */);
+  const hideIds = new Set(/* hidden.json productIdList */);
+  let kitchenId = null, shippingTimeSectionId = null;
+  const items = specials
+    .filter(s => s.stockStatus !== 'outofstock')
+    .map(s => {
+      const p = productById.get(s.productId);
+      if (!p || hideIds.has(p.id)) return null;
+      kitchenId = kitchenId || s.kitchenId;
+      shippingTimeSectionId = shippingTimeSectionId || s.shippingTimeSectionId;
+      return {
+        productSpecialId: s.id, productId: p.id, portionId: s.portionId, cutoffTime: s.cutoffTime,
+        name:  p.extName?.enUs,
+        brand: brandById.get(p.brandId)?.extName?.enUs,
+        price: s.price,
+        rating: p.averageRating || null,
+        category: p.category,
+        in_favorites: favIds.has(p.id),
+        dietary: {
+          glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
+          nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
+        }
+      };
+    })
+    .filter(Boolean);
+  return JSON.stringify({ date, meal, kitchenId, shippingTimeSectionId, items });
 })()
 ```
 
-If the result is `{error: ...}`, the favorites URL got redirected — use the next orderable date+meal. For cart-side scrapes that are already for a future slot, the redirect should not happen.
-
-### 3e. Merge + dedupe + cache
-
-Merge all sources into one array, deduping by `(brand, name)` key. Items present in multiple sources (a Chinese snack in both `Chinese` and `Snack`) collapse into one entry with `categories: ["Chinese", "Snack"]`. Items present in favorites get `in_favorites: true`; others `false`.
-
-Write `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
+Write the result to `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`:
 ```json
 {
-  "cached_at": "2026-05-20T21:30:00",
-  "date": "2026-05-21",
+  "cached_at": "ISO-8601",
+  "date": "2026-05-22",
   "meal": "Lunch",
-  "sources": ["favorites", "Chinese", "Japanese", "Drink", "Side", "Snack", "Dairy & Eggs", "Produce"],
-  "items": [
-    {
-      "brand": "Xiangchuan Kitchen", "name": "BBQ Teriyaki Chicken Cutlet",
-      "price": 14.95, "priceText": "$14.95", "rating": 4.5,
-      "in_favorites": true, "categories": ["favorites", "Chinese"]
-    }
-  ]
+  "kitchenId": 12838,
+  "shippingTimeSectionId": 27274,
+  "items": [ ... ]
 }
 ```
 
-Create `menu-cache/` if missing. Auto-prune cache files older than 24 hours when loading.
+**Hidden items and sold-out items are pre-filtered.** The cache is clean and ready for planning.
 
-### Rate-limit recovery
-If a page returns 0 items twice in a row or HTTP fails, wait 30s and retry once. If 3+ pages fail, ask user:
-> WeBox seems rate-limiting. Want to wait 60s and retry, or proceed with what I have?
+If `j.code !== 1` or items is empty: cutoff has likely passed. Tell the user; suggest picking a later slot.
 
 ---
 
-## Step 4: Build the Order Plan
+## Step 3: Build the Order Plan
 
-Build a complete plan for ALL slots before touching any cart.
+Build a complete plan for ALL requested slots **before placing anything**.
 
-### Budget rules
-- `spend-up-to` (default): aim to use most of budget per slot, prioritize variety
-- `ceiling-only`: pick what looks best without filling
-- Cap applies to food item total only (excludes delivery fees / tax)
+### Budget
+- `spend-up-to` (default): aim to use most of the budget; prioritize variety
+- `ceiling-only`: best picks, no fill-up
+- Cap is on food item total only (no fees/tax)
 
-### Quantities
-Represent as `× N`:
-```
-- Northwest China Cuisine — Tea Egg × 6 — $14.70   ($2.45 × 6)
-```
+### Quantities (× N notation)
 Budget validation: `unit_price × qty`.
 
 ### Selection priority
 
 1. **Hard constraints (never violate):**
-   - Dietary restrictions, allergens
-   - Items rated 1/5 or tagged `never-again` in reviews
-   - Strongly-negative review comments ("超级咸", "肉太少", "inedible") → hard exclude
+   - `restrictions` (vegetarian/vegan/halal/etc.) — filter via `dietary.*` flags
+   - `avoid_allergens` — filter via dietary flags + free-text in review comments
+   - Items rated 1/5 or tagged `never-again` in reviews → exclude
+   - Strongly-negative review comments ("超级咸", "肉太少", "inedible") → exclude
    - Budget cap
 
 2. **Strong preferences:**
    - Items rated 4–5/5 → top candidates
-   - User's prompt constraints
-   - `preferred_cuisines`
+   - User's prompt constraints (e.g., "Chinese only today")
+   - `preferred_cuisines` (match `category`)
 
 3. **Variety (mains only):**
-   - Applies only to main dishes (entrées, bowls, bento, noodles, hot pots)
-   - Items matching `allow_repeat_categories` or `allow_repeat_patterns` are EXEMPT — milk, water, tea egg, salad can repeat freely
-   - For mains: avoid items in recent week files (within `avoid_repeat_days`)
-   - Cross-day variety: don't pick the same main twice in this session
+   - ONLY apply to mains (entrées, bowls, bento, noodles, hot pots).
+   - Items matching `allow_repeat_categories` (Drink, Side, Snack, Dairy & Eggs, Produce) or `allow_repeat_patterns` (milk, water, tea egg, etc.) are EXEMPT — they can repeat freely; ordering 5 of the same is fine.
+   - For mains: avoid productIds in recent `orders/YYYY-Www.json` entries within `avoid_repeat_days`.
+   - Cross-day variety in this session: don't pick the same main twice across consecutive days.
 
 4. **Soft preferences:**
-   - Items with `in_favorites: true` get a small bias over non-favorites
+   - `in_favorites: true` items get a small bias
    - Fill remaining budget with complementary fillers if `spend-up-to`
-   - User's prompt-requested cuisine restricts the MAIN only — fillers can come from any category
+   - Prompt-requested cuisine restricts the MAIN only — fillers can come from any category
 
 ### Item reviews — how to read
 
-Reviews mix optional ratings with free-form comments in any language:
-- "5/5" / "amazing" / "always order" → top preference
+Reviews are free-form prose in any language with optional ratings. Both matter:
+- "5/5" / "amazing" / "always order" → top
 - "4/5" / "good" → preferred
-- "2-3/5" / "ok" / "a bit X" → deprioritize
-- "1/5" / "never again" / "超级咸" → hard exclude (even without a number)
-- Free-text option notes ("always purple rice") → apply when modal opens
+- "2-3/5" / "ok" → deprioritize
+- "1/5" / "never again" / "超级咸" → exclude (even without a number)
 
 If comments diverge across dates, trust the most recent. When a review influences a decision, mention it:
 > Skipping Spicy Hot Pot — review notes "too oily, didn't finish" (2026-05-15).
@@ -386,7 +192,7 @@ If comments diverge across dates, trust the most recent. When a review influence
 
 ---
 
-## Step 4b: Validate Budget (if `validate_budget: true`)
+## Step 3b: Validate Budget (if `validate_budget: true`)
 
 ```bash
 uv run --no-project python -c "
@@ -398,13 +204,13 @@ print(f'OK: \${total:.2f} / \${budget:.2f}')
 "
 ```
 
-If assertion fails: remove most expensive non-essential item, re-validate.
+If assertion fails: remove the most expensive non-essential and re-validate.
 
 ---
 
-## Step 5: Confirm or Proceed
+## Step 4: Confirm or Proceed
 
-**Auto mode** (`confirm_before_order: false`, default): print plan, proceed immediately. Pause only for unresolvable ambiguity, errors, out-of-window dates.
+**Auto mode** (default): print plan, proceed immediately. Pause only for ambiguity, errors, or out-of-window dates.
 
 **Confirm mode** (`confirm_before_order: true`):
 ```
@@ -414,141 +220,100 @@ Wait for reply, apply changes, re-confirm once before proceeding.
 
 ---
 
-## Step 6: Save Plan to Order History
+## Step 5: Save Plan to Order History (planned status)
 
-Before any cart action, write each planned slot to the appropriate per-week file in `~/Documents/WeBox/orders/`. Status `"planned"`. After successful checkout, remove the `planned: true` flag from the entry — that's how downstream code distinguishes active vs not-yet-placed.
-
-Same schema as Step 1c.
-
----
-
-## Step 7: Add Items to Cart (URL search + per-item)
-
-**Use URL search per item — do NOT navigate to a slot menu and DOM-find each item.** Search is server-side, results are deterministic, and each item is an independent navigation (no cross-item state pollution).
-
-### Per-item add (one item at a time, sequential)
-
-For each item in the plan:
-
-1. **Navigate via URL search:**
-   ```
-   https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&queryText=<urlencoded-item-name>
-   ```
-
-2. **Click the first result via JS:**
-   ```javascript
-   (async () => {
-     await new Promise(r => setTimeout(r, 2500));  // wait for results to render
-     const SEL = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
-     const items = [...document.querySelectorAll(SEL)];
-     if (!items.length) return { status: 'no_results' };
-     const target = items[0];
-     const name = target.querySelector('.product-menu-title')?.innerText?.trim();
-     // Safety: verify the first result matches the intended item by token overlap
-     const intended = 'INTENDED_ITEM_NAME';
-     const tokens = intended.toLowerCase().split(/\s+/).filter(t => t.length > 3);
-     const matchesEnough = tokens.filter(t => name?.toLowerCase().includes(t)).length >= Math.max(1, Math.floor(tokens.length / 2));
-     if (!matchesEnough) return { status: 'mismatch', firstResult: name, intended };
-     const btn = target.querySelector('.btn.plus-add') || target.querySelector('.product-add-wrapper');
-     if (!btn) return { status: 'no_button', name };
-     btn.click();
-     await new Promise(r => setTimeout(r, 1200));
-     const modal = !!document.querySelector('[class*="product-detail-header"]');
-     return { status: modal ? 'modal_opened' : 'added_direct', name };
-   })()
-   ```
-
-3. **If `modal_opened`**, handle the modal (next section). Do NOT chain more clicks in the same JS scope — that breaks if the modal stays open.
-
-4. **Then proceed to the next item** with a fresh navigation.
-
-### Modal handling (pure JS)
-
-```javascript
-(async () => {
-  // (Optional) Check ~/Documents/WeBox/items-with-options.md for cached options;
-  // if cached, find and click the matching radio first:
-  //   [...document.querySelectorAll('.option-item, [class*="option"]')]
-  //     .find(el => el.innerText.includes('PREFERRED_OPTION'))?.click();
-  document.querySelector('st-button.add-button')?.click();
-  await new Promise(r => setTimeout(r, 1000));
-  document.querySelector('.anticon.anticon-close')?.click();  // modal does NOT auto-close
-  await new Promise(r => setTimeout(r, 500));
-  return { added: true, modalGone: !document.querySelector('[class*="product-detail-header"]') };
-})()
-```
-
-After a new options-modal encounter, append to `~/Documents/WeBox/items-with-options.md`:
-```
-- [Brand] [Item Name] — options: "Choose Rice" (single, default: White Rice) — chosen: Purple Rice — date: YYYY-MM-DD
-```
-
-### Quantity > 1
-
-**Item without modal:** the add script can safely loop the click N times:
-```javascript
-for (let i = 0; i < qty; i++) {
-  btn.click();
-  await new Promise(r => setTimeout(r, 400));
+For each slot, write/merge into `~/Documents/WeBox/orders/YYYY-Www.json` with `planned: true`:
+```json
+{
+  "date": "2026-05-25",
+  "day": "Mon",
+  "meal": "Lunch",
+  "planned": true,
+  "total": 28.30,
+  "items": [
+    {
+      "productSpecialId": 56813079, "productId": 499852, "portionId": 144251,
+      "cutoffTime": 1779462000000, "shippingTimeSectionId": 27274, "kitchenId": 12838,
+      "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "price": 17.45, "quantity": 1
+    }
+  ]
 }
 ```
 
-**Item with modal:** add once, then navigate to `/checkout` and use the cart qty stepper. See SITEMAP.md for the stepper selectors (`.input-number-wrapper.isCart .btn.plus`).
-
-### Search returns `no_results` / `mismatch`
-
-- `no_results`: try shorter query. If still nothing, item may be sold out — substitute from the cached menu, note in the per-week order file.
-- `mismatch`: first result doesn't contain enough name tokens. Try a more specific query (include brand) or substitute.
-
-### Complex options (5+ option groups)
-
-Last-resort fallback to computer use. Screenshot + judgment to pick options, then run the modal-add JS above. Document chosen options in `items-with-options.md` so future runs use pure JS.
+`planned: true` distinguishes "I told the user we'd order this" from "this is in WeBox". After Step 6 success, remove the flag and add the real `orderId`.
 
 ---
 
-## Step 8: Checkout (pure JS, 2 clicks)
+## Step 6: Place Each Order via API (sequential)
+
+For each slot in the plan, call `POST /api/orders` with the body assembled from the planned items + identity caches.
 
 ```javascript
-(async () => {
-  document.querySelector('a.cart.fr')?.click();  // navigates to /checkout
-  await new Promise(r => setTimeout(r, 2500));
-  if (location.pathname !== '/checkout') return { status: 'failed_to_reach_checkout' };
-  // Cart-vs-plan verification — list line items for comparison
-  const lineItems = [...document.querySelectorAll('.input-number-wrapper.isCart')].map(s => {
-    const card = s.closest('[class*="cart-item"], [class*="cart-product"]') || s.parentElement?.parentElement;
-    return { name: card?.querySelector('[class*="name"], [class*="title"]')?.innerText?.trim(), qty: s.querySelector('input')?.value };
+(async (slot, profile, address) => {
+  const first = slot.items[0];  // all items in a slot share shippingTimeSectionId and kitchenId
+  const dateShipping = new Date(slot.date + 'T00:00:00').getTime();
+  const body = {
+    order: {
+      firstName: profile.firstName,
+      lastName:  profile.lastName,
+      phone:     profile.phone,
+      email:     profile.email,
+      timezone:  profile.timezone || address.timezone || 'America/Los_Angeles',
+      addressId: address.addressId,
+      kitchenId: address.kitchenId,
+      currency:  'Dollar',
+      autoSelectCoupon: true
+    },
+    orderPackages: [{
+      extItems: slot.items.map(it => ({
+        productSpecialId: it.productSpecialId,
+        portionId:        it.portionId,
+        quantity:         it.quantity,
+        cutoffTime:       it.cutoffTime,
+        extCartItemId:    `${slot.date}__${first.shippingTimeSectionId}__${it.productSpecialId}__${it.portionId}`,
+        extChildren:      []
+      })),
+      dateShipping,
+      timeShipping:           slot.meal,
+      shippingTimeSectionId:  first.shippingTimeSectionId,
+      kitchenId:              first.kitchenId,
+      extCutleryQuantity:     0,
+      extBaseCutleryQuantity: 1
+    }],
+    payType:            'Personal',
+    realTips:           0,
+    usePersonalWeBucks: true,
+    hasAddedWeBucks:    false
+  };
+  const r = await fetch('/api/orders?client=web', {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
   });
-  return { status: 'at_checkout', lineItems };
-})()
+  const j = await r.json();
+  return JSON.stringify({ status: r.status, code: j.code, msg: j.msg || j.message, orderId: j.data?.id });
+})(<slot>, <profile>, <address>)
 ```
 
-**Cart drift check:** compare `lineItems` against the planned items for this slot. If they don't match (different items, qtys, or unexpected modal-default additions), STOP and report to the user. Don't blindly Place Order.
+**On success** (`code === 1`, `orderId` returned):
+- Update the per-week JSON entry: remove `planned: true`, add `"orderId": "No.<id>"`
+- Print: `✅ Order placed! Order #<orderId> — <date> <meal> — $<total>`
 
-If everything matches:
-```javascript
-(async () => {
-  document.querySelector('.place-btn')?.click();
-  await new Promise(r => setTimeout(r, 3000));
-  const success = /\/order\/finish\/\d+/.test(location.pathname);
-  const orderNumber = location.pathname.match(/\/order\/finish\/(\d+)/)?.[1];
-  return { success, orderNumber };
-})()
-```
+**On failure** (`code !== 1`):
+- Print `msg` to the user
+- Keep `planned: true` in the per-week file so the user can retry
+- Common cases:
+  - `"cutoff passed"` → slot's order window closed; suggest picking a later slot
+  - `"item out of stock"` → re-fetch the menu, substitute, retry
+  - `"duplicate order"` → slot already has an active order; check `orders/` for an existing entry
 
-After success, immediately update the per-week order file:
-- Remove `planned: true` from the entry
-- Update `total` if it differs
-
-```
-✅ Order placed! Order #XXXXXXX
-   Mon May 25, Lunch — $28.30
-```
+**Sequential, never parallel.** Place Order is a real mutation — race conditions could cause duplicate charges. Always one at a time.
 
 ---
 
-## Step 9: Repeat for Each Slot
+## Step 7: Repeat per Slot
 
-Repeat Steps 7–8 per date+meal sequentially. Slots are independent — different carts — but multi-tab parallelism is not recommended (untested for cart/checkout). Each slot takes ~20-30s.
+Loop Step 6 over each slot in the plan. Each is independent; ~1s per slot.
 
 Final summary:
 ```
@@ -561,12 +326,12 @@ Final summary:
 
 ---
 
-## Step 10: Post-Order Feedback
+## Step 8: Post-Order Feedback
 
-If the user hasn't given feedback this session, invite it:
-> Done! Any feedback on dishes you've tried — good or bad — just tell me. Free-form is fine: "too dry", "loved it", "这个超级咸", etc.
+If no feedback was given this session, invite it:
+> Done! Any feedback on dishes you've tried — good or bad — just tell me. Free-form: "too dry", "loved it", "这个超级咸", etc.
 
-Parse feedback and append to `~/Documents/WeBox/item-reviews.md`. Create the file if missing.
+Parse and append to `~/Documents/WeBox/item-reviews.md`. Create the file if missing.
 
 ### Review format
 ```markdown
@@ -586,26 +351,24 @@ Comments:
 Inferred: hard exclude.
 ```
 
-Append dated comments rather than overwriting. Only update Rating if the user gives a number explicitly.
+Append dated comments rather than overwriting. Only update `Rating:` if the user gives a number explicitly.
 
 ---
-
-## DOM Reference + URL Catalog
-
-See `~/.claude/skills/webox/SITEMAP.md`. Don't duplicate selector docs here — they drift.
 
 ## Error Handling
 
 | Situation | Response |
 |---|---|
-| Item not found in DOM | Re-scrape, then substitute from cached menu |
-| Sold out at cart time | Re-scrape slot, pick substitute, note inline in order file |
+| Menu API code != 1 | Print `msg`; ask user to try later or pick different slot |
+| 0 items for a slot | Cutoff likely passed; suggest later slot |
+| Place Order code != 1 | Print `msg`; leave `planned: true` for retry |
 | Budget exceeded mid-plan | Drop most expensive non-essential, re-plan |
-| Cart drift at checkout | STOP, report to user, don't auto-place |
-| Modal with 5+ option groups | Screenshot + judgment + run modal-add JS |
-| Page hangs / CDP timeout | Wait 3s, retry once; skip slot if still failing |
 | Outside 7-day window | Skip silently, note in summary |
-| Favorites blocked / rate-limited | Hand off to `webox-favorite` (favorites-only) or wait + retry |
-| 3+ scrapes fail in a row | Ask user to wait 60s |
-| Cache file malformed | Treat as missing, re-scrape |
-| New user, no order history | Continue with empty variety state |
+| Identity cache missing | Direct user to `/webox-onboard` |
+| User has no address | Tell user to add a delivery address on webox.com first |
+
+---
+
+## DOM Fallback (last resort)
+
+If the API is unavailable (schema change, etc.), see `~/.claude/skills/webox/SITEMAP.md` "DOM patterns" section for the legacy DOM-scraping + cart-clicking + .place-btn flow. Slower (~30s per slot vs ~1s) and more fragile but works.

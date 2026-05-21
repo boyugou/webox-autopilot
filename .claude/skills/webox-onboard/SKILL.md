@@ -1,348 +1,177 @@
 ---
 name: webox-onboard
-description: First-time setup for webox-autopilot. Verifies Chrome + WeBox login, asks one natural-language question to capture food preferences, scrapes favorites and order history in the background, and creates all local data files. Run this once before using webox-order. Also handles skill updates from GitHub.
+description: First-time setup for webox-autopilot. Verifies Chrome + WeBox login, asks one natural-language question to capture food preferences, then fetches user profile + addresses + favorites + hidden + order history via API and creates all local data files. Run this once before using webox-order. Also handles skill updates from GitHub.
 ---
 
 # WeBox Onboard Skill
 
-Run this once when you first install webox-autopilot, or when you want to re-run setup. Also handles updating the skill files from GitHub.
+First-time setup. Populates `~/Documents/WeBox/` with everything subsequent skills need.
 
-Data directory: `~/Documents/WeBox/`  
-All files are plain text — open them in any editor or Finder.
+**API-first.** All data fetched via WeBox's JSON API (verified, documented in `~/.claude/skills/webox/SITEMAP.md`). No DOM scraping.
 
----
+## What gets created
 
-## What this skill does
-
-1. Verifies Claude in Chrome is connected and WeBox is logged in
-2. Asks one open-ended question about your food preferences
-3. After you reply, scrapes your favorites and order history sequentially in one tab (~10-15s total)
-4. Writes all data files to `~/Documents/WeBox/`
-5. Shows a summary
-
-If you've already run onboarding, it offers to update preferences, re-sync data, or update the skill itself.
+- `preferences.md` — your settings (from your onboarding answer)
+- `user-profile.json` — `{firstName, lastName, phone, email, timezone, id}` (required for Place Order)
+- `address-info.json` — `{addressId, kitchenId, timezone, address1, city}` (required for Place Order)
+- `favorites.json` — `{productIdList, brandIdList, synced_at}` (hearted items)
+- `hidden.json` — `{productIdList, brandIdList, synced_at}` (Not-Interested items)
+- `orders/YYYY-Www.json` — per-ISO-week order history (active orders only)
+- `menu-cache/<TOMORROW>-Lunch.json` — warm cache for the first order
+- `item-reviews.md` — empty stub
 
 ---
 
 ## Step 1: Open a Fresh Tab + Verify Login
 
-### 1a. Get a clean tab (don't reuse old session state)
-
-**Always start onboarding with a brand-new tab.** Tabs left over from prior sessions can be on stale URLs or have intermediate state.
-
+### 1a. Get a clean tab
 ```
 tabs_context_mcp({ createIfEmpty: true })
 ```
-
-- If no MCP group exists yet → this creates a new window with a fresh empty tab. Use that tab.
-- If an MCP group already exists → call `tabs_create_mcp()` explicitly to create a new tab. Use the new tab's `tabId` for the rest of onboarding; ignore the older tabs.
-
-**Capture the `tabId` of the new tab and pass it explicitly to every subsequent `navigate` / `javascript_tool` call.** Don't rely on "the current tab" — always be explicit about which tab.
+If an MCP tab group already exists, call `tabs_create_mcp()` to get a brand-new tab anyway. Capture the `tabId` and pass it to every subsequent call explicitly — don't rely on "current tab".
 
 ### 1b. Navigate to webox.com and probe login
-
 ```
 navigate(<tabId>, "https://www.webox.com")
 ```
-
-Wait ~2s for the page to load, then run:
+Wait ~2s for the page to load, then verify login via JS:
 ```javascript
 ({ loggedIn: !!document.querySelector('[class*="user-avatar"], [class*="user-name"], [class*="header-avatar"], a.cart.fr') })
 ```
-`a.cart.fr` is the cart icon — only present when logged in.
-
 If `loggedIn: false`:
 > You're not logged into WeBox. Please log in at webox.com in Chrome and try again.
 
-### 1c. Data directory
+### 1c. Data directories
 ```bash
-mkdir -p ~/Documents/WeBox
+mkdir -p ~/Documents/WeBox/orders ~/Documents/WeBox/menu-cache
 ```
 
-**Permission note:** Claude in Chrome may prompt the user to approve the FIRST navigation to webox.com per origin. Normal, happens once. Don't navigate to webox.com multiple times — one nav is enough.
+**Permission note:** Claude in Chrome may prompt for permission to navigate to webox.com on the first navigation per origin. This is normal — accept once.
 
 ---
 
 ## Step 2: Detect First-Run vs Returning User
 
-A user is considered **already onboarded** if **both** of these are true:
-- `~/Documents/WeBox/preferences.md` exists, AND
-- `~/Documents/WeBox/orders/` directory exists with at least one `YYYY-Www.json` file (or is documented as empty after a sync that returned no orders)
-
-Both confirm onboarding actually ran (a stray preferences file alone — manually copied or left from a prior partial setup — wouldn't indicate history was synced).
+Already onboarded if **both** files exist:
+- `~/Documents/WeBox/preferences.md`
+- `~/Documents/WeBox/user-profile.json`
 
 **If already onboarded:**
-
-> You're already set up! Here's what I found in ~/Documents/WeBox/:
-> - preferences.md ✓
-> - item-reviews.md (X items reviewed)
-> - orders/ (X weeks of history, latest sync DATE, Y total active orders)
-> - menu-cache/ (X cached slot snapshots)
->
-> What would you like to do?
+> You're already set up. What would you like to do?
 > 1. **Update preferences** — I'll ask what's changed
-> 2. **Re-sync order history** — pull the latest orders from WeBox (hands off to `webox-sync`)
-> 3. **Clear menu caches** — force a fresh menu scrape on your next order
-> 4. **Update the skill** — pull the latest version from GitHub
-> 5. **Nothing** — just checking
+> 2. **Re-sync everything** — hands off to `/webox-sync`
+> 3. **Update the skill** — pull the latest from GitHub
+> 4. **Nothing** — just checking
 
-Handle the user's choice. For option 3 — `rm -f ~/Documents/WeBox/menu-cache/*.json`. For option 4, jump to Step 6.
+For option 3, jump to "Step 8: Update Skill".
 
-**If not yet onboarded:** continue to Step 3 (ask question, wait for reply), then Step 4 (scrape sequentially after reply).
+**If not yet onboarded:** continue to Step 3.
 
 ---
 
-## Step 3: Ask the preferences question
+## Step 3: Ask the Preferences Question
 
 Say:
-
 > Before your first order, tell me about your food preferences — anything goes: budget, diet, allergens, cuisines you love or avoid, whether you want me to confirm before ordering, drink preferences, etc. Answer however feels natural — one sentence or a full paragraph, in any language.
 
-**Then wait for the user's reply. Do not start scraping yet** — scraping in parallel with the question opens multiple tabs the user didn't expect and may produce unreliable results (background-tab lazy load is inconsistent). Scrape AFTER the user replies, in Step 4.
-
-## Step 4: Scrape sequentially (after the user has replied)
-
-Two scrapes, one tab at a time, in the same single tab where possible. Total time ~10–15s.
-
-**4a. Order history first** — navigate the existing main tab to `https://www.webox.com/order/list/normal` and run the smart-scroll scrape from SCRIPT_4A below. Convert each order to per-week JSON and save to `~/Documents/WeBox/orders/YYYY-Www.json` (see schema in Step 5b).
-
-**4b. Then favorites** — use **tomorrow's date** (not today). Today's Lunch cutoff may have passed, which causes WeBox to silently redirect from the favorites URL to the next orderable slot's full-menu view (returns 100+ wrong items, not favorites). Navigate the same tab to `https://www.webox.com/menu/section/My%20Favorites?date=<TOMORROW_YYYY-MM-DD>&shippingTime=Lunch` and run SCRIPT_4B. Save to `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json` as the warm cache.
-
-Reusing the same tab avoids the multi-tab permission prompts and the "what are these tabs" surprise. Each scrape is ~5s, sequential total ~10s.
-
-#### 4a. Order history scrape (SCRIPT_4A)
-
-Uses **incremental scroll + harvest-while-scrolling**, dedup by orderId. Robust to virtual scrolling (where items at the top unmount as you scroll down) AND additive lazy-load.
-
-```javascript
-(async () => {
-  const SEL = '.order-item';
-  let waited = 0;
-  while (document.querySelectorAll(SEL).length === 0 && waited < 10000) {
-    await new Promise(r => setTimeout(r, 300));
-    waited += 300;
-  }
-  const now = new Date();
-  const toFullDate = (md) => {
-    const m = md.match(/(\d{2})\/(\d{2})/); if (!m) return null;
-    let d = new Date(now.getFullYear(), +m[1]-1, +m[2]);
-    if (d - now > 30*86400000) d = new Date(now.getFullYear()-1, +m[1]-1, +m[2]);
-    return d.toISOString().slice(0, 10);
-  };
-  const isoWeek = (iso) => {
-    const d = new Date(iso + 'T00:00:00'); d.setHours(0,0,0,0);
-    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
-    const ys = new Date(d.getFullYear(), 0, 1);
-    return `${d.getFullYear()}-W${String(Math.ceil((((d - ys)/86400000)+1)/7)).padStart(2,'0')}`;
-  };
-  const weekMonday = (wk) => {
-    const [y, w] = wk.split('-W').map(Number);
-    const jan4 = new Date(y, 0, 4); const dow = jan4.getDay() || 7;
-    const mon = new Date(jan4); mon.setDate(jan4.getDate() - dow + 1 + (w-1)*7);
-    return mon.toISOString().slice(0, 10);
-  };
-  const seen = new Set();
-  const synced = now.toISOString();
-  const weeks = {};
-  const harvest = () => {
-    for (const o of document.querySelectorAll(SEL)) {
-      const orderId = o.querySelector('.order-id')?.innerText?.trim();
-      if (!orderId || seen.has(orderId)) continue;
-      const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
-      if (/refund|cancel/i.test(orderStatus)) { seen.add(orderId); continue; }
-      const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-      const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
-      const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
-      if (!dateLine || !mealLine) continue;
-      const meal = mealLine.match(/^(Lunch|Dinner|HappyHour)/)[1];
-      const items = [...o.querySelectorAll('.product-item')].map(p => {
-        const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
-        const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-        const desc = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
-        const pl = txt.find(l => /^\$[\d.]+/.test(l));
-        return { name, brand: desc?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim(), price: pl ? parseFloat(pl.slice(1)) : null };
-      }).filter(x => x.name);
-      if (!items.length) continue;
-      const fullDate = toFullDate(dateLine);
-      if (!fullDate) continue;
-      const day = dateLine.split(/\s+/)[0];
-      const wk = isoWeek(fullDate);
-      if (!weeks[wk]) weeks[wk] = { week: wk, week_starts: weekMonday(wk), synced_at: synced, orders: [] };
-      weeks[wk].orders.push({ date: fullDate, day, meal, items });
-      seen.add(orderId);
-    }
-  };
-  harvest();
-  const step = Math.max(window.innerHeight * 0.8, 600);
-  let y = 0;
-  let lastSize = seen.size, stable = 0;
-  for (let i = 0; i < 100; i++) {
-    y += step;
-    window.scrollTo(0, y);
-    await new Promise(r => setTimeout(r, 600));
-    harvest();
-    const atBottom = y >= document.body.scrollHeight - window.innerHeight;
-    if (seen.size === lastSize) {
-      if (++stable >= 5 && atBottom) break;
-    } else { stable = 0; }
-    lastSize = seen.size;
-  }
-  return JSON.stringify(weeks);
-})()
-```
-
-**Output is directly writable** — keyed by ISO week. For each key, write `~/Documents/WeBox/orders/<key>.json` with the value as the file content. No post-processing. If empty (new user), create `~/Documents/WeBox/orders/.empty` marker instead.
-
-### Output handling — trust the tool result, don't re-chunk
-
-The tool result string can be 5–20 KB for a typical user. Claude Code's terminal display may visually truncate it at ~1 KB with `[TRUNCATED]`, but **the truncation is purely display — the agent's tool result contains the full string**. Pass the full JSON string straight to `Write` / `JSON.parse` without trying to "chunk-read" via further `slice()` calls (which would be wasted round-trips). If you genuinely need to verify size, do `JSON.parse(result).hasOwnProperty('errorKey')` checks rather than reading the literal string.
-
-### Recovery if the order-list page hangs
-
-If the JS times out (CDP returns no result after ~45s), the order list page may genuinely be unresponsive (heavy lazy-load, network slow). Don't retry the scrape; instead:
-1. Create `~/Documents/WeBox/orders/.empty` as the "onboarded" marker.
-2. Move on to favorites scrape (Step 4b).
-3. Tell the user: "Order list took too long to load — I'll skip it for first-run. Run `/webox-sync` later when the page is responsive to pull your history."
-
-Don't loop-retry — onboarding shouldn't block on a flaky page.
-
-Empty result (new user, no orders) → create `~/Documents/WeBox/orders/.empty` marker so the "already onboarded" check in Step 2 succeeds on next run.
-
-**Recovery if CDP times out:** if this script times out, the order list page may be hung. Skip it for first-run (just create the `.empty` marker) — webox-sync will do the first sync later. Don't retry in onboarding — onboarding shouldn't block on this.
-
-#### 4b. Favorites scrape (SCRIPT_4B)
-
-Use **tomorrow's date** in `YYYY-MM-DD` format when constructing the URL (today's slot may have its cutoff passed, causing WeBox to silently redirect):
-```
-https://www.webox.com/menu/section/My%20Favorites?date=<TOMORROW_YYYY-MM-DD>&shippingTime=Lunch
-```
-
-```javascript
-(async () => {
-  await new Promise(r => setTimeout(r, 1500));
-  // Redirect detection — WeBox silently redirects favorites→full menu when the
-  // target slot's cutoff has passed. Check URL AND the rendered "My Favorites"
-  // section header in the DOM (ground truth). If either is off → redirected.
-  const urlOk = /My%20Favorites|My Favorites/.test(location.href);
-  const headerEl = [...document.querySelectorAll('.menu-section-header__title, [class*="section-header__title"]')]
-    .find(e => /My Favorites/i.test((e.innerText || '').trim()));
-  if (!urlOk || !headerEl) {
-    return JSON.stringify({ error: 'redirected', urlOk, headerFound: !!headerEl, url: location.href, hint: 'Use a later orderable date+meal' });
-  }
-  const SEL = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
-  let waited = 0;
-  while (document.querySelectorAll(SEL).length === 0 && waited < 10000) {
-    await new Promise(r => setTimeout(r, 300));
-    waited += 300;
-  }
-  // Harvest-while-scrolling: dedup by (brand, name) to handle virtual scrolling
-  // (where the page mounts/unmounts items as you scroll) AND additive lazy-load.
-  const collected = new Map();
-  const harvest = () => {
-    for (const el of document.querySelectorAll(SEL)) {
-      const soldOutEl = el.querySelector('.product-menu-top-sold-out-wrapper');
-      if (soldOutEl && getComputedStyle(soldOutEl).display !== 'none') continue;
-      const w = el.querySelector('.product-item-content-wrapper');
-      const name = w?.querySelector('.product-menu-title')?.innerText?.trim();
-      if (!name) continue;
-      const brand = w?.querySelector('.brand-wrapper')?.innerText?.trim();
-      const key = `${brand}|${name}`;
-      if (collected.has(key)) continue;
-      const rating = parseFloat(w?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0]) || null;
-      const price = parseFloat(w?.querySelector('.product-price')?.innerText?.trim().replace('$', '') || '0');
-      const item = { name, brand, price };
-      if (rating !== null) item.rating = rating;
-      collected.set(key, item);
-    }
-  };
-  harvest();
-  const step = Math.max(window.innerHeight * 0.8, 600);
-  let y = 0;
-  let lastSize = collected.size, stable = 0;
-  for (let i = 0; i < 80; i++) {
-    y += step;
-    window.scrollTo(0, y);
-    await new Promise(r => setTimeout(r, 600));
-    harvest();
-    const atBottom = y >= document.body.scrollHeight - window.innerHeight;
-    if (collected.size === lastSize) {
-      if (++stable >= 5 && atBottom) break;
-    } else { stable = 0; }
-    lastSize = collected.size;
-  }
-  const items = [...collected.values()];
-  if (items.length > 600) {
-    return JSON.stringify({ error: 'suspect_too_many', count: items.length });
-  }
-  return JSON.stringify({ items });
-})()
-```
-
-If the result is `{error: "redirected", ...}` or `{error: "suspect_redirect", ...}`, retry with the next orderable date+meal slot. If even tomorrow's Lunch redirects, the user may have no orderable slots in the immediate future — just write `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json` with an empty `items: []` and note in the summary.
-
-Otherwise: result is `{items: [...]}` — write the items array to `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json` wrapped in the standard cache schema (Step 5c).
+**Wait for the user's reply** before any further work. No background scraping while they type — surprised tabs are bad UX.
 
 ---
 
-## Step 5: Process the User's Reply
+## Step 4: Fetch Identity + Favorites + Hidden in One Call
 
-When the user responds to the onboarding question:
+After the user replies, run this single JS call on the existing tab to grab everything we need for both Place Order later and the warm-cache filter below:
 
-### 5a. Parse and write preferences
-
-The canonical preferences template is `preferences.md` in the webox-autopilot repo root — read it (or load the cached copy from the repo clone) and write that exact content to `~/Documents/WeBox/preferences.md`, replacing values **only for fields the user explicitly mentioned**.
-
-#### CRITICAL: defaults are sacred
-
-**For any field the user did not mention, KEEP THE TEMPLATE'S DEFAULT EXACTLY AS-IS.** Do not invent, infer, or "improve" values the user didn't ask for.
-
-- Don't downgrade the default budget because the user "sounds frugal"
-- Don't add cuisines to `cuisines_to_avoid` because the user didn't mention them as preferred
-- Don't switch `confirm_before_order` to `true` because the user seems cautious
-- Don't shrink `history_window_days` because the user didn't ask
-- Don't add `vegetarian` because the user mentioned liking vegetables
-
-The user can always edit the file later or tell Claude to update specific fields. Inferring or guessing creates surprise behavior the user can't trace back to anything they said.
-
-Only change a field if the user clearly named it or named a synonym ("budget" / "spend" / "cap" / "上限" → `budget`; "vegetarian" / "vegan" / "no meat" → `restrictions`; etc.).
-
-The template includes inline comments explaining each option (`# spend-up-to | ceiling-only`, the full categories list, etc.). Preserve these — the file is meant to be human-editable in Finder.
-
-Free-text observations the user volunteered that don't map to any structured field go into the `## Notes` section at the bottom (preserve the template's helper comment above it).
-
-Example mappings (only change explicitly stated fields):
-- "vegetarian" → `restrictions: [vegetarian]` (other dietary fields untouched)
-- "budget around 25" → `budget: 25.00` (budget_mode etc. unchanged)
-- "ask me first" / "confirm before ordering" → `confirm_before_order: true`
-- "love spicy Thai food" → add `Thai` to `preferred_cuisines` IF the user named it; otherwise just append "loves spicy Thai" to `foods_i_like`
-- "no dairy" → `avoid_allergens: [dairy]`
-- "5 milks a week" → leave defaults; mention in `## Notes`
-
-#### Summary back to the user
-
-After writing the file, echo only what you CHANGED from defaults — not the whole config. This makes it easy for the user to spot if you misinterpreted anything:
-
-```
-✅ Saved preferences. Changed from defaults:
-  - budget: 25.00 (was 30.00)
-  - restrictions: [vegetarian]
-  - confirm_before_order: true
-Everything else kept default. Edit ~/Documents/WeBox/preferences.md anytime.
+```javascript
+(async () => {
+  const [profile, addresses, fav, hide] = await Promise.all([
+    fetch('/api/users/my', { credentials: 'include' }).then(r => r.json()),
+    fetch('/api/v2/userAddresses/my', { credentials: 'include' }).then(r => r.json()),
+    fetch('/api/fav/my', { credentials: 'include' }).then(r => r.json()),
+    fetch('/api/hide/my', { credentials: 'include' }).then(r => r.json())
+  ]);
+  const addrs = Array.isArray(addresses.data) ? addresses.data : (addresses.data?.list || []);
+  const defaultAddr = addrs.find(a => a.isDefault) || addrs[0] || null;
+  return JSON.stringify({
+    profile: profile.data ? {
+      id: profile.data.id,
+      firstName: profile.data.firstName,
+      lastName: profile.data.lastName,
+      phone: profile.data.phone,
+      email: profile.data.email,
+      timezone: profile.data.timezone || defaultAddr?.timezone || 'America/Los_Angeles'
+    } : null,
+    address: defaultAddr ? {
+      addressId: defaultAddr.id,
+      kitchenId: defaultAddr.kitchenId,
+      timezone: defaultAddr.timezone,
+      address1: defaultAddr.address1,
+      city: defaultAddr.city
+    } : null,
+    favorites: { productIdList: fav.data?.productIdList || [], brandIdList: fav.data?.brandIdList || [], synced_at: new Date().toISOString() },
+    hidden: { productIdList: hide.data?.productIdList || [], brandIdList: hide.data?.brandIdList || [], synced_at: new Date().toISOString() }
+  });
+})()
 ```
 
-If the user didn't mention anything specific, that's fine — say so:
+Write each field to its own JSON file in `~/Documents/WeBox/`:
+- `user-profile.json` ← `profile`
+- `address-info.json` ← `address`
+- `favorites.json` ← `favorites`
+- `hidden.json` ← `hidden`
+
+If `address` is null (no registered delivery address), stop:
+> You don't have a delivery address set on WeBox yet. Please add one at webox.com first, then run `/webox-onboard` again.
+
+---
+
+## Step 5: Fetch Order History via Paginated API
+
+```javascript
+(async () => {
+  const params = 'client=web&status=Paid%2CPartialRefunded%2CPlanned%2CUnpaid%2CRefunded%2CCancelled%2COnHold&pageSize=10&type=Individual&orderBy=id&desc=true&referenceTypes=GROUP_ORDER_META';
+  const all = [];
+  let pageIndex = 1;
+  while (pageIndex <= 100) {
+    const r = await fetch(`/api/orders/list?${params}&pageIndex=${pageIndex}`, { credentials: 'include' });
+    const j = await r.json();
+    if (j.code !== 1 || !j.data?.result?.length) break;
+    all.push(...j.data.result);
+    if (all.length >= j.data.totalCount) break;
+    pageIndex++;
+  }
+  // Filter to active only + flatten the per-package structure
+  const active = [];
+  for (const r of all) {
+    if (r.order?.status !== 'Paid') continue;
+    for (const pkg of (r.orderPackages || [])) {
+      const items = (pkg.extItems || []).map(it => ({
+        productId: it.productId,
+        productSpecialId: it.productSpecialId,
+        quantity: it.quantity,
+        price: (it.pricePerUnitCents ?? it.priceCents ?? 0) / 100
+      }));
+      active.push({
+        orderId: 'No.' + r.order.id,
+        dateShippingMs: pkg.dateShipping,
+        timeShipping: pkg.timeShipping,
+        total: (r.order.totalCharge || 0),
+        items
+      });
+    }
+  }
+  return JSON.stringify({ totalFetched: all.length, activeCount: active.length, orders: active });
+})()
 ```
-✅ Saved preferences using all defaults. Edit ~/Documents/WeBox/preferences.md anytime.
+
+Convert each entry to a per-week JSON file. ISO-week computation:
+
+```javascript
+// Pseudocode for the agent: convert dateShippingMs → YYYY-MM-DD → "YYYY-Www" → week file
 ```
 
-### 5b. Write per-week order files from scraped data
+For each active order, group by `isoWeek(dateShipping)` and write to `~/Documents/WeBox/orders/YYYY-Www.json`:
 
-For each scraped active order:
-1. Convert `"Mon 05/18"` to a full ISO date (use current year; if the resulting date is in the future, use previous year).
-2. Compute the ISO week → `YYYY-Www` (e.g. `2026-W21` for Mon 2026-05-18).
-3. Read or create `~/Documents/WeBox/orders/<YYYY-Www>.json` and append/merge.
-
-Schema (matches what the scraper returns directly — just iterate the returned object's keys and write each value as the file content):
 ```json
 {
   "week": "2026-W21",
@@ -350,48 +179,105 @@ Schema (matches what the scraper returns directly — just iterate the returned 
   "synced_at": "2026-05-21T14:30:00Z",
   "orders": [
     {
-      "date": "2026-05-18",
-      "day": "Mon",
+      "date": "2026-05-21",
+      "day": "Thu",
       "meal": "Lunch",
+      "orderId": "No.3259401",
+      "total": 21.95,
       "items": [
-        { "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "price": 17.45 }
+        { "productId": 499852, "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "price": 17.45, "quantity": 1 }
       ]
     }
   ]
 }
 ```
 
-The scraper handles dedup internally (date+meal+first item name). If a week file already exists locally with `planned: true` entries from `webox-order`, preserve them — only overwrite entries whose `date+meal` match.
+**Resolving product names**: the orders API returns `productId` but not the human-readable name. Two options:
+- (Recommended) Fetch the menu API once for **tomorrow's date** (Step 6 anyway) and use its `products` array as a lookup for orders that contain those products. For older orders with productIds no longer in the current menu, omit the name (use `"<unknown>"` placeholder) — the `productId` alone is enough for variety tracking.
+- Or call `POST /api/products` with the list of unique productIds for full name resolution.
 
-If scrape returned 0 orders (new user), create `~/Documents/WeBox/orders/.empty` as a marker so future runs detect "onboarded" correctly.
+**Edge case:** if `activeCount === 0` (brand-new user), create `~/Documents/WeBox/orders/.empty` as a marker so Step 2 detection succeeds next time.
 
-### 5c. Write today's menu cache (warm cache for first order)
+---
 
-If the favorites scrape (Step 4b) returned items, write `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json` (note: tomorrow, not today — Step 4b uses tomorrow's date):
+## Step 6: Fetch Tomorrow's Menu as Warm Cache
 
+```javascript
+(async () => {
+  // Tomorrow's date in YYYY-MM-DD
+  const tmr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  const addrId = /* from address-info.json */;
+  const favIds = new Set(/* from favorites.json productIdList */);
+  const hideIds = new Set(/* from hidden.json productIdList */);
+  const r = await fetch(`/api/productSpecials/v8/address/${addrId}/date/${tmr}`, { credentials: 'include' });
+  const j = await r.json();
+  if (j.code !== 1) return JSON.stringify({ error: 'menu fetch failed', code: j.code, msg: j.msg });
+  const { lunchSpecials, products, productBrands } = j.data;
+  const productById = new Map(products.map(p => [p.id, p]));
+  const brandById = new Map(productBrands.map(b => [b.id, b]));
+  let kitchenId = null, shippingTimeSectionId = null;
+  const items = lunchSpecials
+    .filter(s => s.stockStatus !== 'outofstock')
+    .map(s => {
+      const p = productById.get(s.productId);
+      if (!p || hideIds.has(p.id)) return null;
+      kitchenId = kitchenId || s.kitchenId;
+      shippingTimeSectionId = shippingTimeSectionId || s.shippingTimeSectionId;
+      return {
+        productSpecialId: s.id,
+        productId: p.id,
+        portionId: s.portionId,
+        cutoffTime: s.cutoffTime,
+        name: p.extName?.enUs,
+        brand: brandById.get(p.brandId)?.extName?.enUs,
+        price: s.price,
+        rating: p.averageRating || null,
+        category: p.category,
+        in_favorites: favIds.has(p.id),
+        dietary: {
+          glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
+          nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
+        }
+      };
+    })
+    .filter(Boolean);
+  return JSON.stringify({ count: items.length, kitchenId, shippingTimeSectionId, items });
+})()
+```
+
+Write to `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json`:
 ```json
 {
   "cached_at": "ISO-8601",
   "date": "<TOMORROW>",
   "meal": "Lunch",
-  "sources": ["favorites"],
-  "items": [
-    {
-      "brand": "Xiangchuan Kitchen",
-      "name": "BBQ Teriyaki Chicken Cutlet",
-      "price": 14.95,
-      "priceText": "$14.95",
-      "rating": 4.5,
-      "in_favorites": true,
-      "categories": ["favorites"]
-    }
-  ]
+  "kitchenId": 12838,
+  "shippingTimeSectionId": 27274,
+  "items": [ ... ]
 }
 ```
 
-Create the `menu-cache/` directory if it doesn't exist. If favorites returned empty, skip this step.
+---
 
-### 5d. Create empty item-reviews.md (if missing)
+## Step 7: Write Preferences + Reviews Stub, Print Summary
+
+### 7a. Parse and write preferences
+
+The canonical template is `preferences.md` in the webox-autopilot repo root. Read it and write the exact same content to `~/Documents/WeBox/preferences.md`, **only changing values the user explicitly mentioned in their onboarding reply**.
+
+#### CRITICAL: defaults are sacred
+
+For any field the user did not mention, **keep the template default exactly as-is**. Don't infer or "improve":
+- Don't downgrade the default budget because the user "sounds frugal"
+- Don't switch `confirm_before_order` to true because the user seems cautious
+- Don't add `vegetarian` because the user mentioned liking salad
+- Don't shorten `history_window_days`
+
+Only change a field if the user clearly named it or a synonym ("budget"/"spend"/"上限" → `budget`; "vegetarian"/"vegan"/"no meat" → `restrictions`; etc.).
+
+Free-text observations that don't map to a structured field go into the `## Notes` section at the bottom (preserve the template's helper comment above it).
+
+### 7b. Create empty item-reviews.md (if missing)
 
 ```markdown
 # Item Reviews
@@ -400,39 +286,46 @@ Create the `menu-cache/` directory if it doesn't exist. If favorites returned em
 <!-- Examples: -->
 <!--   "The Mongolian Beef bento from Xiangchuan Kitchen is amazing, 5/5" -->
 <!--   "这个超级咸，别再点了" -->
-<!--   "肉太少，分量不够" -->
-
 ```
 
-### 5e. Print summary
+### 7c. Summary
+
+Echo only what CHANGED from defaults — and confirm the per-file counts:
 
 ```
-✅ WeBox setup complete! Files in ~/Documents/WeBox/:
+✅ WeBox setup complete.
 
-  preferences.md            — budget $30, prefer Chinese/Japanese, no mushrooms
-  item-reviews.md           — empty (grows as you order and give feedback)
-  orders/2026-W21.json, ... — X weeks of history, Y past active orders
-  menu-cache/<TOMORROW>.json — X favorites scraped as warm cache for first order
+Changed from defaults:
+  - budget: 25.00 (was 30.00)
+  - restrictions: [vegetarian]
+Everything else kept default.
 
-You're ready to order! Try:
-  "Order my lunch for tomorrow"        (default — curated full menu via webox-order)
-  "Order from my favorites tomorrow"   (faster narrow scope via webox-favorite)
+Files in ~/Documents/WeBox/:
+  preferences.md           — your settings (edit in Finder anytime)
+  user-profile.json        — Boyu Gou, boyu.gou@..., 6145568304
+  address-info.json        — 1881 Page Mill Rd (kitchen 12838)
+  favorites.json           — 131 hearted products
+  hidden.json              — 180 "Not Interested" products
+  orders/                  — 407 past active orders across N weeks
+  menu-cache/<TOMORROW>.json — X items for tomorrow's Lunch
+  item-reviews.md          — empty (grows as you order)
+
+You're ready to order. Try:
+  "Order my lunch for tomorrow"        (curated full menu via webox-order)
+  "Order from my favorites tomorrow"   (narrow scope via webox-favorite)
   "Show my WeBox calendar"             (via webox-sync)
 ```
 
-Tailor the preferences summary line to what the user actually told you.
+If the user said nothing specific:
+```
+✅ WeBox setup complete using all default preferences.
+```
 
 ---
 
-## Step 6: Update the Skill
-
-If the user asked to update the skill (option 4 in Step 2, or says "update webox-autopilot" / "upgrade webox"):
+## Step 8: Update Skill (if user picked Option 3 in Step 2)
 
 ```bash
-# Show current version (for comparison)
-ls -la ~/.claude/skills/webox-order/SKILL.md 2>/dev/null
-
-# Clone latest and run installer
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot-update
 cd /tmp/webox-autopilot-update && git log --oneline -1
 bash /tmp/webox-autopilot-update/install.sh
@@ -440,6 +333,6 @@ rm -rf /tmp/webox-autopilot-update
 ```
 
 After update:
-- Report which commit was just installed
-- Note that the current Claude Code session is still running the old skill files in memory — restart Claude Code for the new version to take effect
-- `~/Documents/WeBox/` files (preferences, reviews, history, caches) are never touched
+- Report which commit was just installed.
+- Note: the current Claude Code session is still running the old skill files in memory. **Restart Claude Code** for the new version to take effect.
+- `~/Documents/WeBox/` files (preferences, profile, history, reviews) are never touched by updates.

@@ -1,8 +1,8 @@
 # webox-autopilot
 
-> Order your WeBox meals autonomously with Claude Code — JS-first, budget-aware, variety-conscious, fully transparent.
+> Order your WeBox meals autonomously with Claude Code — API-first, budget-aware, variety-conscious, fully transparent.
 
-**webox-autopilot** is a set of six Claude Code skills that order food from [WeBox](https://webox.com) by simply telling Claude what you want. It uses your existing logged-in Chrome session, scrapes the menu, picks items based on your preferences and past reviews, and checks out — all without leaving your terminal. Every operation is pure JavaScript or URL navigation; no slow image+coordinate clicks.
+**webox-autopilot** is a set of six Claude Code skills that order food from [WeBox](https://webox.com) by talking to Claude in plain language. Every read and write goes through WeBox's JSON API — no DOM scraping, no scroll loops. Fetching the entire menu takes ~1 second. Placing an order is one POST.
 
 ```
 Order lunch and dinner Mon–Fri next week, Chinese and Japanese only.
@@ -10,6 +10,10 @@ Order lunch and dinner Mon–Fri next week, Chinese and Japanese only.
 
 ```
 Get me 5 organic milks across the week + lunch for Thursday and Friday.
+```
+
+```
+Hide all sugary drinks.
 ```
 
 ```
@@ -34,9 +38,9 @@ Claude Code reads `CLAUDE.md` and follows the install steps automatically.
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Either option installs six skills: `webox`, `webox-onboard`, `webox-order`, `webox-favorite`, `webox-sync`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") to do the 2-minute setup.
+Either option installs six skills: `webox`, `webox-onboard`, `webox-order`, `webox-favorite`, `webox-sync`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") for the ~30-second setup.
 
-The same one-liner upgrades to the latest version. Your `~/Documents/WeBox/` data is never touched by install or update.
+The same one-liner upgrades to the latest version. Your `~/Documents/WeBox/` data is never touched.
 
 ## Requirements
 
@@ -51,12 +55,12 @@ The same one-liner upgrades to the latest version. Your `~/Documents/WeBox/` dat
 
 | Skill | Trigger | Purpose |
 |---|---|---|
-| `webox-onboard` | `/webox-onboard` or "set up WeBox" | First-time setup: preferences, favorites, history. Also handles skill updates. **Run this first.** |
-| `webox-order` | "Order my lunch for tomorrow" | **Primary ordering.** Curated full-menu scrape (favorites + preferred cuisines + filler categories), plan within budget, cart, checkout. |
-| `webox-favorite` | "Order from my usuals" / "Stick to favorites" | Narrow variant — favorites-only scope, faster (~5s/slot). |
-| `webox-sync` | "Show my WeBox calendar" / "Sync everything" | Pull latest history from WeBox, display this week + next week. |
+| `webox-onboard` | `/webox-onboard` or "set up WeBox" | First-time setup: fetches profile, address, favorites, hidden list, order history via API. **Run this first.** |
+| `webox-order` | "Order my lunch for tomorrow" | **Primary ordering.** API menu fetch → plan within budget honoring preferences/dietary/reviews → place via `POST /api/orders`. |
+| `webox-favorite` | "Order from my usuals" / "Stick to favorites" | Narrow variant — same flow, filtered to your hearted items. |
+| `webox-sync` | "Show my WeBox calendar" / "Sync everything" | Refresh history + favorites/hidden + upcoming-slot menus via API, then display the weekly calendar. |
 | `webox-reset` | "Reset WeBox" / "Start over" | Wipe all local data in ~/Documents/WeBox/ and re-onboard. |
-| `webox` | "What's available on WeBox for Friday?" / ad-hoc | General knowledge loader for free-form WeBox tasks — search, inspect, browse. Loads URL/DOM reference and lets the agent improvise. |
+| `webox` | "What's available friday?" / "Hide all sugary drinks" / ad-hoc | General API loader for free-form tasks — search, inspect, bulk hide/favorite, browse. |
 
 ## Usage
 
@@ -70,9 +74,9 @@ claude --chrome
 ```
 /webox-onboard
 ```
-Answer one open-ended question about your food preferences (any language). After you reply, Claude scrapes your order history and today's favorites sequentially in one tab (~15s).
+Answer one open-ended question about your food preferences. Claude fetches profile + addresses + favorites + history via API (~15s total).
 
-### Ordering (default = curated full menu)
+### Ordering
 ```
 Order my lunch for tomorrow.
 Order lunch and dinner Mon–Fri next week.
@@ -81,21 +85,22 @@ Order next week, Chinese and Japanese only, confirm before placing.
 Get me 5 milks across this week.
 ```
 
-### Favorites-only ordering (faster, narrow)
+### Favorites-only ordering
 ```
 Order from my usuals for tomorrow.
 Quick favorite order for Thursday lunch.
 ```
 
-### Ad-hoc WeBox queries
+### Ad-hoc tasks
 ```
 What's available for dinner Friday?
 Search for noodles on Tuesday.
+Hide all sugary drinks.
+Favorite every Korean main dish.
 What's in my cart?
-Clear my cart.
 ```
 
-### Reviewing dishes (any language, any format)
+### Reviewing dishes (any language)
 ```
 The Mongolian Beef bento is amazing — 5/5.
 这个超级咸，肉太少
@@ -121,13 +126,13 @@ All settings live in `~/Documents/WeBox/preferences.md` (visible in Finder — e
 |---|---|---|---|
 | `budget` | number | `30.00` | Hard cap per meal slot (food only, excludes fees/tax) |
 | `budget_mode` | string | `spend-up-to` | `spend-up-to`: fill the budget with variety. `ceiling-only`: best picks, no fill-up. |
-| `validate_budget` | bool | `false` | If true, runs a Python `sum × qty` check before any cart action |
+| `validate_budget` | bool | `false` | If true, runs a Python `sum × qty` check before each order |
 
 ### Ordering Behavior
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
-| `confirm_before_order` | bool | `false` | `false`: auto-order in one shot. `true`: show full plan, wait for OK. |
+| `confirm_before_order` | bool | `false` | `false`: auto-order in one shot. `true`: show plan, wait for OK. |
 | `default_meals` | list | `[Lunch, Dinner]` | Meal types to order when not specified |
 | `skip_weekends` | bool | `true` | Skip Sat/Sun for multi-day ranges |
 
@@ -136,16 +141,9 @@ All settings live in `~/Documents/WeBox/preferences.md` (visible in Finder — e
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `avoid_repeat_days` | int | `7` | Don't re-order the same **main** within this many days |
-| `history_window_days` | int | `28` | Days of order-history loaded into context (default = ~3 weeks past + 7-day future window) |
+| `history_window_days` | int | `28` | Days of order-history loaded into context |
 | `allow_repeat_categories` | list | `[Drink, Side, Snack, Dairy & Eggs, Produce]` | Categories exempt from variety rules |
 | `allow_repeat_patterns` | list | `[milk, water, tea egg, sparkling, coconut, juice, yogurt]` | Name patterns exempt from variety rules |
-
-### Category Scraping (saves time)
-
-| Setting | Type | Default | Description |
-|---|---|---|---|
-| `category_mode` | string | `curated` | `curated`: favorites + preferred_cuisines + fillers (~7 scrapes, ~35s). `whitelist`: only `category_list`. `blacklist`: all except `category_list`. `all`: every category (~150s). |
-| `category_list` | list | `[Dessert, Snack]` | Used only by `whitelist`/`blacklist` modes. Default is a minimal exclusion (just Dessert and Snack — categories most users don't want as a meal). Customize freely; set to empty list for no exclusions. |
 
 ### Dietary
 
@@ -155,8 +153,8 @@ All settings live in `~/Documents/WeBox/preferences.md` (visible in Finder — e
 | `avoid_allergens` | list | `[none]` | `nuts`, `shellfish`, `dairy`, `eggs`, `soy`, ... |
 | `preferred_cuisines` | list | `[Chinese, Japanese]` | Cuisines to prioritize |
 | `cuisines_to_avoid` | list | `[none]` | Cuisines to never order |
-| `foods_i_like` | list | `[none]` | Free-text patterns ("spicy", "noodles", ...) |
-| `foods_to_avoid` | list | `[none]` | Free-text patterns ("mushrooms", "very oily", ...) |
+| `foods_i_like` | list | `[none]` | Free-text patterns |
+| `foods_to_avoid` | list | `[none]` | Free-text patterns |
 
 ### Drinks
 
@@ -174,11 +172,14 @@ All in `~/Documents/WeBox/` — plain text + JSON, edit freely.
 
 | File | Purpose |
 |---|---|
-| `preferences.md` | All settings. Created by onboarding from your reply, editable forever. |
+| `preferences.md` | All settings. Created by onboarding, editable forever. |
+| `user-profile.json` | `{firstName, lastName, phone, email, timezone}` — needed for Place Order. |
+| `address-info.json` | `{addressId, kitchenId, timezone}` — needed for Place Order. |
+| `favorites.json` | `{productIdList, brandIdList, synced_at}` — hearted items. |
+| `hidden.json` | Same shape — "Not Interested" items. |
+| `orders/YYYY-Www.json` | Per-ISO-week order history (active orders only). |
+| `menu-cache/YYYY-MM-DD-Meal.json` | Per-slot menu snapshot. TTL 60 min, auto-pruned after 24h. |
 | `item-reviews.md` | Personal ratings + free-form comments per dish (any language). Comments stack as a timeline. Heavily injected into selection. |
-| `orders/YYYY-Www.json` | Per-ISO-week order history (cancelled/refunded filtered out at sync time). Kept long-term; only `history_window_days` worth loaded into context per session. |
-| `menu-cache/YYYY-MM-DD-Meal.json` | Per-slot menu snapshot with `in_favorites` flag and `categories[]` sources. TTL 60 min, auto-pruned after 24h. |
-| `items-with-options.md` | Known dishes with required-options modals + your chosen options. Grows over time so future modals are auto-handled. |
 
 ---
 
@@ -188,29 +189,25 @@ All in `~/Documents/WeBox/` — plain text + JSON, edit freely.
 User prompt
     │
     ▼
-0. Prerequisite check (Chrome connected, preferences.md exists)
-   If preferences missing → tell user to run /webox-onboard first
+0. Prerequisite check (Chrome connected, identity caches exist)
+   If anything missing → tell user to run /webox-onboard first
     │
     ▼
-1. Load preferences.md + item-reviews.md + orders/recent-weeks/*.json
+1. Load preferences + identity caches + item-reviews + order-history (recent)
     │
     ▼
-2. If latest order week file is stale (> 1 day), sync from WeBox
-   (filter cancelled/refunded out at scrape time)
+2. Sync order history if stale (> 1 day) via /api/orders/list paginated
     │
     ▼
-3. For each slot:
-   - Check menu-cache/SLOT.json (TTL 60 min) → reuse if fresh
-   - Else: per category_mode (default `curated` = favorites + preferred_cuisines
-     + filler categories), scrape sequentially in one tab
-   - Dedupe by (brand, name); merge with in_favorites flag
-   - Write merged menu to menu-cache/SLOT.json
+3. For each target slot:
+   - Check menu-cache (TTL 60 min) → reuse if fresh
+   - Else: GET /api/productSpecials/v8/... (~1s) → join lunchSpecials+products+brands,
+     filter sold-out, filter hidden, mark in_favorites, write to menu-cache
     │
     ▼
-4. Build full multi-day plan from cached menus
-   Inject: preferences + reviews (5/5 → top, 1/5 → exclude, free-text
-           comments synthesized) + variety rules (fillers exempt) +
-           budget + quantity × N
+4. Build the plan
+   Inject: preferences + reviews (5/5 top, 1/5 exclude, free-text synthesized)
+           + variety rules (fillers exempt) + budget + quantity × N
     │
     ▼
 4b. Optional Python budget validation (uv run python)
@@ -220,86 +217,78 @@ User prompt
    confirm_before_order = true  → show plan, wait for OK
     │
     ▼
-6. Write plan to orders/YYYY-Www.json (status: planned)
+6. Write plan to orders/YYYY-Www.json (planned: true)
     │
     ▼
-7. For each slot, for each item: URL search (?queryText=NAME),
-   click add (or modal → Add to Cart → close), all pure JS.
-   Then a.cart.fr → /checkout → .place-btn → /order/finish/<NUMBER>.
-   Update orders/YYYY-Www.json entry to status: active.
+7. For each slot: POST /api/orders with the assembled body (one slot = one POST, ~1s)
+   On success: update entry to active with orderId
+   Sequential, never parallel — avoids race conditions
     │
     ▼
 8. Final summary + invite free-form feedback
    Reviews appended to item-reviews.md
 ```
 
-For favorites-only scope (faster), use `webox-favorite` — same flow but Step 3 scrapes only the favorites page.
+For favorites-only scope, use `webox-favorite` — same flow but Step 3 filters items to `in_favorites: true` only.
 
 ## First Session vs Later Sessions
 
-### First session (after `/webox-onboard`)
-- 1 open-ended question asked; skill waits for your reply
-- After reply: order history scraped (~5s), then today's favorites (~5s), sequentially in one tab
-- Today's favorites become the warm `menu-cache/<TODAY>-Lunch.json` for your first order
+### First session (after `/webox-onboard`, ~30s)
+- 1 open-ended preferences question; skill waits for your reply
+- After reply: API parallel-fetch of profile + address + favorites + hidden
+- Paginated fetch of full order history (~4s for 400 orders)
+- Tomorrow's menu warm-cached for instant first order
 - All files created in `~/Documents/WeBox/`
 
 ### Later sessions
-- preferences.md, item-reviews.md → loaded instantly
-- orders/YYYY-Www.json → reused if synced within 1 day; otherwise re-sync
-- menu-cache/SLOT.json → reused if cached_at < 60 min for the slot you're ordering
-- items-with-options.md → known modals handled automatically without prompts
+- preferences.md, identity caches → loaded instantly
+- orders/YYYY-Www.json → reused if synced within 1 day
+- menu-cache/SLOT.json → reused if cached_at < 60 min
+- item-reviews.md → loaded instantly; new feedback appended each session
 
 ## Automation Breakdown
 
-| Step | Method | Reliability |
+All operations are pure API or pure JS — no slow image+coordinate clicks.
+
+| Operation | Method | Time |
 |---|---|---|
 | Menu (cached) | Read local JSON | instant |
-| Menu (scrape favorites or category) | URL navigate + JS smart-scroll | ~5s per scrape |
-| Menu (multi-category, e.g. `curated`) | Sequential per-category scrapes | ~35s for 7 categories |
-| Order history (scrape) | JS + smart scroll | ✅ 100% |
+| Menu (fresh) | `GET /api/productSpecials/v8/...` (one call, ~2000 items) | ~1s |
+| Order history (full) | `GET /api/orders/list` paginated | ~4s for 400 orders |
+| Favorites / hidden | `GET /api/fav/my` / `GET /api/hide/my` | ~200ms |
 | Budget validation | Python `sum(p × q)` via `uv run` | ✅ 100% |
-| Add item (no options) | URL search `?queryText=NAME` + JS click `.btn.plus-add` | ✅ 100% |
-| Add item (with options) | URL search → modal → JS `st-button.add-button` → close | ✅ pure JS |
-| Add item × N | JS click N times (no modal) or cart stepper on `/checkout` | ✅ 100% |
-| Complex modal options (5+ groups) | Screenshot + model judgment + JS Add-to-Cart | adaptive |
-| Open cart | JS click `a.cart.fr` → navigates to `/checkout` | ✅ 100% |
-| Place Order | JS click `.place-btn` → URL becomes `/order/finish/<NUMBER>` | ✅ 100% |
+| Place Order | `POST /api/orders` with assembled body | ~1s per slot |
+| Bulk hide / favorite | API loop (one POST per match) | ~200ms × N |
 
 ## WeBox Constraints
 
 - **7-day window:** Orders up to 7 days ahead only.
-- **Meal cutoffs:** Lunch has mid-morning cutoff; skipped if passed.
+- **Meal cutoffs:** The menu API only returns items for slots whose cutoff hasn't passed.
 - **Weekends:** No subsidized Lunch/Dinner; skipped by default.
-- **Budget per slot:** Each date+meal is a separate checkout.
+- **Budget per slot:** Each date+meal is a separate POST.
 
 ## FAQ
 
 **Q: Will it double-order a slot I've already ordered?**
-A: No — the per-week order files (`orders/YYYY-Www.json`) are checked first; slots marked `active` or `planned` are skipped.
+A: No — `orders/YYYY-Www.json` is checked first; slots with active or planned entries are skipped.
 
 **Q: What if an item is sold out?**
-A: Filtered during scraping. If sold out at cart time, the skill re-scrapes that date and picks a substitute, noting it inline.
+A: Filtered by the API (`stockStatus`). If something went out of stock between menu fetch and Place Order, the API returns an error and the skill substitutes from the cached menu.
 
-**Q: What if the total would exceed my budget?**
-A: Items that would push the food total over budget aren't added. With `validate_budget: true`, a Python check enforces strictly.
-
-**Q: Can I see what Claude plans before it orders?**
-A: Set `confirm_before_order: true` in preferences. The plan is shown; you can request changes before approval.
-
-**Q: I want 5 bottles of water in one slot.**
-A: Just say it: "order 5 waters with Thursday lunch". Quantities supported via `× N` notation.
+**Q: What if I want 5 bottles of water in one slot?**
+A: Just say it: "order 5 waters with Thursday lunch". Quantities are first-class.
 
 **Q: I keep wanting milk every day — won't variety rules block that?**
-A: No. Fillers (drinks, sides, eggs, milk, water) are exempt via `allow_repeat_categories` and `allow_repeat_patterns`. Customize if needed.
-
-**Q: How do I force a fresh menu scrape?**
-A: Just place an order — menu-cache TTL is 60 minutes. Or delete `~/Documents/WeBox/menu-cache/*.json` to force re-scrape on next order.
+A: No. Fillers (Drink, Side, Snack, Dairy & Eggs, etc.) are exempt via `allow_repeat_categories` and `allow_repeat_patterns`.
 
 **Q: Can I cancel an order it placed?**
-A: Yes — `webox.com/order/list/normal` and cancel within the allowed window. The cancellation is filtered out on the next sync, so the slot becomes openable again.
+A: Yes — at webox.com/order/list/normal. On next sync, the slot will be marked open again.
 
 **Q: How do I review a dish?**
-A: Tell Claude in any form: "the Mongolian beef was too dry", "love this 5/5", "这个超级咸". Stored verbatim in `item-reviews.md` and weighted in future selection.
+A: Tell Claude in any form: "the Mongolian beef was too dry", "love this 5/5", "这个超级咸". Stored in `item-reviews.md` verbatim and weighted in future selection.
+
+**Q: Can I bulk-hide ("Not Interested") a bunch of items?**
+A: Yes — say "hide all sugary drinks" or "hide everything by Brand X". The `/webox` general skill loops `POST /api/userHide/addHide` over matched items. Confirms with you first.
 
 ## Updating
 
@@ -315,9 +304,9 @@ git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot &&
 
 PRs welcome. Areas for improvement:
 
-- HappyHour / weekend ordering
-- Cancel-order skill
-- Multi-week planning with persistent state
+- HappyHour / weekend ordering (templated, not yet wrapped)
+- `webox-cancel` skill (templated endpoints exist in SITEMAP.md, not yet wrapped)
+- Multi-week planning with persistent state across sessions
 - Budget tracking across multiple orders
 - Smarter sentiment analysis on reviews
 

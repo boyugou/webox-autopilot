@@ -1,61 +1,53 @@
 ---
 name: webox-favorite
-description: Order food from WeBox using ONLY the user's hearted favorites for each meal slot. Fast (~5s per slot) but narrow — skips all category scrapes. Use when the user says "order from my usuals", "stick to favorites", "quick order from my hearted list", or wants a fast lightweight order from known dishes. For broader exploration including the full curated menu, use webox-order instead (the default).
+description: Order food from WeBox using ONLY the user's hearted favorites for each meal slot. Fast and narrow — picks from items the user has already chosen to like. Use when the user says "order from my usuals", "stick to favorites", "quick order from my hearted list". For broader exploration including the full menu, use webox-order instead.
 ---
 
-# WeBox Favorite-Only Order
+# WeBox Order — Favorites-Only Variant
 
-Thin variant of `webox-order`. Same flow for everything except Step 3 (menu scrape).
+Thin variant of `webox-order`. **Same API flow**, with one tighter filter in Step 2: only items where `in_favorites: true` are considered for the plan.
 
-For Step 0 (prereq), Step 1 (load state), Step 2 (sync history), Step 4 (plan), Step 4b (validate), Step 5 (confirm), Step 6 (save plan), Step 7 (cart-add), Step 8 (checkout), Step 9 (per-slot loop), Step 10 (post-order feedback) — follow `~/.claude/skills/webox-order/SKILL.md` exactly. Read it first, then apply the Step 3 override below.
+For Step 0 (prereq), Step 1 (load state), Step 3 (plan), Step 3b (validate budget), Step 4 (confirm), Step 5 (save planned), Step 6 (Place Order), Step 7 (per-slot loop), Step 8 (post-order feedback) — **follow `~/.claude/skills/webox-order/SKILL.md` exactly.**
 
-Also read `~/.claude/skills/webox/SITEMAP.md` for URL patterns and DOM selectors.
+The only difference is in Step 2's filter, below.
+
+Also see `~/.claude/skills/webox/SITEMAP.md` for API reference.
 
 ---
 
-## Step 3 override: favorites-only scrape
+## Step 2 override: filter the menu to favorites only
 
-Skip all category scraping. Only scrape the favorites page for each slot.
+After fetching the menu via `GET /api/productSpecials/v8/...` (same as `webox-order` Step 2), apply an additional filter that drops non-favorited items:
 
-### 3a. Cache check
-Read `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json` if it exists and is fresh (cached_at < 60 min). If the cache `sources` includes `"favorites"`, use it. Skip to Step 4.
-
-### 3b. Scrape favorites
-Navigate to:
+```javascript
+// items already filtered by hidden + sold-out (same as webox-order Step 2b)
+const favItems = items.filter(it => it.in_favorites === true);
 ```
-https://www.webox.com/menu/section/My%20Favorites?date=YYYY-MM-DD&shippingTime=Lunch
-```
-Replace `Lunch` with `Dinner` for dinner slots. (Favorites are date-bound — items vary by date.)
 
-Run the menu-scrape JS from `webox-order/SKILL.md` Step 3b — same code, same DOM selectors.
+Save the cache to `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json` with a `scope` marker so downstream code knows this is a favorites-only snapshot:
 
-Tag every returned item with `in_favorites: true`, `categories: ["favorites"]`.
-
-### 3c. If favorites is empty or insufficient
-
-Unlike `webox-order`, this skill does NOT auto-augment with categories. If favorites can't fulfill the slot (empty page, all sold out, can't reach `budget × 0.4` with a main), STOP and ask:
-
-> Your favorites page is empty / can't fulfill the budget for [date]. Want me to switch to `/webox-order` (which adds curated categories) instead?
-
-This skill is deliberately narrow — agreeing to switch should require the user's explicit consent.
-
-### 3d. Cache the result
-
-Write `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
 ```json
 {
   "cached_at": "ISO-8601",
-  "date": "2026-05-21",
+  "date": "2026-05-22",
   "meal": "Lunch",
-  "sources": ["favorites"],
-  "items": [
-    { "brand": "...", "name": "...", "price": 14.95, "rating": 4.5, "in_favorites": true, "categories": ["favorites"] }
-  ]
+  "kitchenId": 12838,
+  "shippingTimeSectionId": 27274,
+  "scope": "favorites-only",
+  "items": [ /* favorite items only */ ]
 }
 ```
 
+### If the favorites-only set can't fulfill the slot
+
+If the filtered set is empty, or selection can't reach `budget × 0.4`, or there's no main dish in favorites:
+
+> Your favorites for [date] [meal] can't fulfill the budget (only X items totaling $Y). Want me to switch to `/webox-order` (full menu) instead?
+
+This skill is deliberately narrow — agreeing to switch should require the user's explicit consent.
+
 ---
 
-## Everything else: identical to webox-order
+## Everything else: same as webox-order
 
-Selection (Step 4), budget validation (4b), confirmation (5), plan persistence (6), URL-search-based cart-add (7), JS checkout (8), per-slot loop (9), post-order feedback (10) — all identical. The DOM Reference, Error Handling, and JS-First Principle from `webox-order/SKILL.md` and `webox/SITEMAP.md` apply unchanged.
+Selection logic (Step 3), budget validation, confirmation, plan persistence, Place Order via `POST /api/orders`, post-order feedback — all identical to `webox-order`. Refer to `webox-order/SKILL.md` for those steps; don't duplicate the logic here.
