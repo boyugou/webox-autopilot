@@ -5,9 +5,41 @@ description: Order food from WeBox autonomously via the WeBox API. Fetches the f
 
 # WeBox Order Skill
 
-> **CRITICAL — about `javascript_tool` return values:**
-> Tool-result truncation is REAL — at ~1000 characters / ~50 lines, your displayed AND model-context content is cut, with everything after `[TRUNCATED]` lost. Verified empirically. **Never write to `~/Downloads`** or use blob/download tricks from JS — they don't work. The reliable pattern is the chunked retrieval below: stash data on `window.__webox*`, slice it back in deterministic chunks of 5 items (flat JSON, no pretty-printing) per call. Larger chunks WILL silently drop data.
+> **About `javascript_tool` return values:**
+> Tool-result truncation is REAL — at ~1000 characters / ~50 lines, your model-context (not just display) is cut. **Two retrieval paths:**
+> 1. **Download bypass (preferred):** JS triggers a `<a download>` Blob click → file lands in `~/Downloads/webox-*.json` → Bash `mv` to `~/Documents/WeBox/`. ONE JS call per file. Requires the user to have granted Chrome's "automatic downloads" permission for `[*.]webox.com` (one-time setup in `chrome://settings/content/automaticDownloads`).
+> 2. **Chunked fallback:** if the file doesn't land in `~/Downloads`, stash data on `window.__webox*` and slice back in chunks of 5 items per call, flat JSON.
 
+---
+
+## Defaults
+
+- **Meal types:** when not specified, order both **Lunch and Dinner** per day
+- **Weekends:** skip Sat/Sun for multi-day ranges unless asked
+- **Confirmation:** `auto` by default (set `confirm_before_order: true` in config.yaml for plan-first mode)
+- **Budget:** hard cap from `config.yaml`; default `spend-up-to` mode fills the budget with variety
+
+## WeBox Constraints
+
+- **7-day window:** orders accepted up to 7 days ahead
+- **Meal cutoffs:** the menu API simply won't return a slot once its cutoff has passed
+- **One slot = one POST:** each `(date, meal)` is a separate `POST /api/orders` — sequential, never parallel
+
+---
+
+## Step 0: Prerequisite Check
+
+```
+tabs_context_mcp({ createIfEmpty: true })
+```
+
+Capture the `tabId`. Navigate to `https://www.webox.com` (login probe). Verify `a.cart.fr` exists.
+
+Check that all required files exist in `~/Documents/WeBox/`:
+- `config.yaml`, `user-profile.json`, `address-info.json`, `favorites.json`, `shipping-windows.json`
+
+If any is missing:
+> You haven't set up WeBox yet. Run `/webox-onboard` first — takes about 2 minutes.
 
 ---
 

@@ -17,7 +17,7 @@ Files in `~/Documents/WeBox/` that get deleted (everything — `rm -rf ~/Documen
 - `menu-cache/` — per-slot menu snapshots
 
 Does NOT touch:
-- The installed skills at `~/.claude/skills/webox-*` (use `/webox-onboard` → "Update the skill" for that)
+- The installed skills at `~/.claude/skills/webox-*` (use `/webox-update` if you also want to refresh those)
 - Anything outside `~/Documents/WeBox/`
 - Your WeBox account itself (past orders, favorites, etc. all remain on webox.com)
 
