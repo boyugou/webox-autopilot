@@ -302,6 +302,13 @@ For each slot in the plan, call `POST /api/orders` with the body assembled from:
 **On success** (`code === 1`, `orderId` returned):
 - Update the per-week JSON entry: remove `planned: true`, add `"orderId": "No.<id>"`
 - Print: `✅ Order placed! Order #<orderId> — <date> <meal> — $<total>`
+- **Move on immediately. Do NOT verify by polling the orders list.**
+
+> **CRITICAL — `code: 1` is the only success signal you need.** The order is placed in WeBox's database the moment the POST returns successfully. Do NOT then call `/api/orders/list?status=Planned,OnHold,Unpaid` or any other "did it work?" query.
+>
+> Real failure mode observed: agent placed an order (POST returned `code: 1`, orderId in hand), then polled `/api/orders/list?status=Planned%2COnHold%2CUnpaid` to "verify" — but a fresh paid order's status is `Paid` (NOT in that filter), and the API has cache lag besides. The agent saw `totalCount: 0`, panicked, retried, polled more, got stuck for minutes while the order was already done.
+>
+> The Place Order POST is your source of truth. `code: 1` + `data.id` = the order exists. Move on.
 
 **On failure** (`code !== 1`):
 - Print `msg` to the user

@@ -156,6 +156,8 @@ Body shape (every value traceable):
 
 **Response:** `{ code: 1, data: { id: <orderNumber>, ... } }`. The order is placed immediately on success.
 
+**Do NOT poll `/api/orders/list` to verify.** `code: 1` is the only success signal you need. A fresh order has `status: "Paid"`, not in the `Planned/OnHold/Unpaid` filter set most agents reach for. The orders-list API also has cache lag of several seconds. Polling causes the agent to incorrectly conclude the order failed, then retry — risk of duplicate charges.
+
 **These IDs and times CANNOT be derived from the menu API alone.** The menu API gives you `productSpecialId` and `productId`, but `shippingTimeSectionId` + `extFormCutoff` come from past orders' `extShippingTimeSection` records, and `portionId` comes from `products[].extPortions`. The skill caches all three in `shipping-windows.json` and the menu cache.
 
 ### Order modifications (path-templated in bundle; capture-on-action before use)
