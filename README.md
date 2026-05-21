@@ -49,6 +49,23 @@ Order next week, Chinese and Japanese only, confirm before placing.
 Refresh my favorites and reorder what I usually get.
 ```
 
+You can also manage your preferences and reviews mid-conversation:
+
+```
+The Mongolian Beef bento is amazing — save that as a 5/5.
+The poke bowl was too salty, don't order it again.
+Update my budget to $25.
+I'm vegetarian now.
+```
+
+### First-Run Onboarding
+
+The first time you invoke the skill, Claude will ask you a single open-ended question:
+
+> Before I start ordering, tell me about your food preferences — diet, allergens, cuisines you love or hate, budget, etc.
+
+Just answer naturally in any language. Claude parses your reply and writes `~/.webox-autopilot/user-preferences.md` automatically. You can edit the file anytime after that.
+
 ---
 
 ## Configuration Reference
@@ -105,10 +122,12 @@ The skill maintains several cache files in `~/.webox-autopilot/` to avoid redund
 
 | File | TTL | Purpose |
 |------|-----|---------|
-| `favorites-cache.md` | 7 days | Cached favorites list. Re-scraped automatically when stale. Say "refresh my favorites" to force an update. |
-| `order-history-cache.json` | 1 hour | Cached order history. Avoids re-scraping `/order/list/normal` if you run multiple sessions close together. |
-| `plan-cache.md` | `plan_cache_days` | Full record of planned and actual orders. Used for variety tracking (avoid_repeat_days) and as a human-readable order log. |
-| `items-with-options.md` | permanent | Items that open an options modal when added to cart, with the option type and chosen value. Grows over time — future sessions pre-select known choices automatically. |
+| `user-preferences.md` | permanent | Your budget, dietary restrictions, cuisine preferences, and ordering behavior settings. Created from your onboarding answers. Edit anytime. |
+| `item-reviews.md` | permanent | Your personal ratings and notes on specific dishes. Hard-injected into every ordering decision — 5/5 items get prioritized, "never order again" items are excluded. |
+| `favorites-cache.md` | 7 days | Cached WeBox favorites list. Re-scraped automatically when stale. Say "refresh my favorites" to force an update. |
+| `order-history-cache.json` | 1 hour | Cached order history. Avoids re-scraping `/order/list/normal` if you run back-to-back sessions. |
+| `plan-cache.md` | `plan_cache_days` | Full record of planned and actual orders. Used for variety tracking (`avoid_repeat_days`) and as a human-readable order log. |
+| `items-with-options.md` | permanent | Items that open an options modal, with the option type and chosen value. Grows over time — future sessions pre-select known choices automatically. |
 
 ---
 
@@ -118,8 +137,11 @@ The skill maintains several cache files in `~/.webox-autopilot/` to avoid redund
 User prompt
     │
     ▼
-1. Read ~/.webox-autopilot/user-preferences.md
-   + Load favorites cache (skip scraping if fresh)
+0. First run? → onboarding question → parse reply → write user-preferences.md
+    │
+    ▼
+1. Load user-preferences.md + item-reviews.md
+   + Load favorites cache (skip scraping if < 7 days old)
    + Load order history cache (skip scraping if < 1 hour old)
    + Prune stale plan cache entries
     │
@@ -132,7 +154,8 @@ User prompt
     │
     ▼
 4. Build full multi-day order plan
-   + validate_budget: run Python sum check if enabled
+   Inject: preferences + item reviews (5/5 → top, 1/5 → exclude) + variety rules
+   validate_budget: Python sum check if enabled
     │
     ▼
 5. confirm_before_order = false → proceed immediately
@@ -141,11 +164,12 @@ User prompt
     ▼
 6. For each date+meal: add items to cart, checkout
    • No options  → JS click (instant)
-   • Simple options (e.g. "Choose Rice") → accept default or cached preference
-   • Complex options (poke bowls) → Claude uses judgment
+   • Simple options (e.g. "Choose Rice") → check items-with-options.md, accept or use cached preference
+   • Complex options (poke bowls) → Claude uses judgment + review notes
     │
     ▼
-7. Update plan cache with actual ordered items + order numbers
+7. Update plan cache with actual items + order numbers
+   Invite post-order feedback → parse → append to item-reviews.md
 ```
 
 ## Automation Breakdown

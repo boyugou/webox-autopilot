@@ -22,10 +22,35 @@ You are ordering food from WeBox on behalf of the user. Use the `mcp__claude-in-
 
 ---
 
+## Step 0: First-Run Onboarding
+
+Check whether `~/.webox-autopilot/user-preferences.md` exists.
+
+**If it does not exist**, run the onboarding flow before anything else:
+
+1. Say:
+
+   > Before I start ordering, I'd like to set up your preferences. Just tell me naturally — anything about your diet, foods you love or hate, allergens, cuisine preferences, how much you want to spend, whether you want me to confirm before ordering, etc. You can be as brief or detailed as you like, and mix languages freely.
+
+2. Wait for the user's response.
+
+3. Parse their reply and extract all relevant preferences. Map them to the fields in `user-preferences.md`. Use judgment for anything that doesn't map cleanly — put it in the free-text notes section at the bottom. Leave fields at their defaults if the user didn't mention them.
+
+4. Write the populated `~/.webox-autopilot/user-preferences.md` file (create `~/.webox-autopilot/` directory if needed).
+
+5. Echo back a brief summary of what you recorded, e.g.:
+   > Got it! I've set up your preferences: budget $25, vegetarian, prefer Chinese and Japanese, no mushrooms, confirm before ordering.
+
+6. Then continue to Step 1 and proceed with the order.
+
+**If the file already exists**, skip to Step 1.
+
+---
+
 ## Step 1: Load User Preferences and Caches
 
 ### 1a. Read preferences
-Read `~/.webox-autopilot/user-preferences.md`. If it doesn't exist, proceed with defaults and note you'll infer preferences from order history.
+Read `~/.webox-autopilot/user-preferences.md`.
 
 Key settings to extract:
 - `budget` and `budget_mode` (spend-up-to vs ceiling-only)
@@ -35,10 +60,13 @@ Key settings to extract:
 - `avoid_repeat_days` (default: 3)
 - Dietary restrictions, preferred cuisines, drink policy
 
-### 1b. Prune stale plan cache entries
+### 1b. Load item reviews
+Read `~/.webox-autopilot/item-reviews.md` if it exists. This file contains the user's personal ratings and notes on specific dishes. Keep this loaded — it will be injected into selection decisions in Step 4.
+
+### 1c. Prune stale plan cache entries
 Read `~/.webox-autopilot/plan-cache.md` and drop any entries older than `plan_cache_days`. Use remaining entries for variety tracking (avoid items ordered in the past `avoid_repeat_days` days).
 
-### 1c. Load favorites cache
+### 1d. Load favorites cache
 Check `~/.webox-autopilot/favorites-cache.md`:
 - If it exists and `last_updated` is within **7 days**: use the cached list, skip scraping the favorites page.
 - If missing or stale: scrape the favorites page (Step 3), then write the results to `favorites-cache.md`.
@@ -55,7 +83,7 @@ last_updated: YYYY-MM-DD
 
 To force a refresh, the user can say "refresh my favorites" and you should delete or ignore the cache.
 
-### 1d. Load order history cache
+### 1e. Load order history cache
 Check `~/.webox-autopilot/order-history-cache.json`:
 - If it exists and `cached_at` is within **1 hour**: use it, skip navigating to `/order/list/normal`.
 - Otherwise: scrape order history (Step 2), then write to the cache file.
@@ -137,12 +165,41 @@ After scraping all needed dates, build the complete plan for **all days at once*
 - **ceiling-only mode:** Pick what seems best without trying to fill the budget
 
 ### Selection Heuristics
-1. **Prioritize favorites** (items the user has hearted)
-2. **Avoid recent repeats** — check plan-cache.md for items ordered in the past 3–5 days
-3. **Apply dietary restrictions and cuisine preferences** from preferences file
-4. **Apply user's prompt** (e.g., "healthy", "Chinese food", "something light")
-5. **Cross-day variety** — don't pick identical items across days in the same ordering session
-6. **Budget constraint** — food item total must not exceed budget per slot
+
+Apply these in order — higher rules take precedence:
+
+1. **Hard constraints (never violate):**
+   - Dietary restrictions (vegetarian, vegan, etc.)
+   - Allergens to avoid
+   - Items the user has explicitly rated 1/5 or marked "never order again" in item-reviews.md
+   - Budget cap
+
+2. **Strong preferences:**
+   - Items rated 4–5/5 in item-reviews.md → strongly prefer these
+   - Items rated 2–3/5 → deprioritize but don't exclude
+   - Preferred cuisines from preferences file
+   - User's prompt constraints (e.g., "healthy", "Chinese only", "something light")
+
+3. **Variety and recency:**
+   - Avoid items ordered within `avoid_repeat_days` days (check plan-cache.md)
+   - Cross-day variety within the same ordering session — don't repeat across days
+
+4. **Soft preferences:**
+   - Prioritize WeBox favorites (hearted items)
+   - Preferred cuisines
+   - Budget mode (spend-up-to: fill the budget with variety; ceiling-only: pick best regardless of total)
+
+### Item Reviews Injection
+
+When item-reviews.md is loaded, treat the review notes as direct signals:
+
+- **"amazing", "love this", 5/5** → bump this item to the top of candidates
+- **"too salty", "portion too small", 2/5** → deprioritize; mention the note if you still pick it due to no better options
+- **"never order again", "disliked", 1/5** → treat as a hard exclude (same as allergen)
+- **Free-text notes** (e.g., "always get extra sauce", "prefer the spicy version") → use as context for option selection when a modal opens
+
+Include the item review in your reasoning when it influences a decision, e.g.:
+> Picking Mongolian Beef bento (rated 5/5: "always order this") over Spicy Hot Pot (rated 2/5: "too oily").
 
 ### Plan Format
 
@@ -314,9 +371,42 @@ Repeat Steps 7–8 for each date+meal in the plan. After all orders are complete
   ...
 ```
 
-## Step 10: Cleanup (Optional)
+## Step 10: Post-Order Feedback (Optional)
 
-After all orders succeed, offer to update `~/.webox-autopilot/user-preferences.md` if new preferences were inferred from the order choices.
+After all orders succeed:
+
+1. **Invite reviews** (only if the user hasn't already given feedback in this session):
+   > Orders placed! If you have any feedback on items you've tried recently — ratings, things you loved or want to avoid — just tell me and I'll save them for next time.
+
+   If the user responds with feedback, parse it and append to `~/.webox-autopilot/item-reviews.md`.
+
+2. **Update preferences** if new dietary or cuisine preferences were inferred from the conversation.
+
+### Item Review File Format
+
+`~/.webox-autopilot/item-reviews.md`:
+
+```markdown
+# Item Reviews
+
+## [Brand] — [Item Name]
+Rating: X/5
+Tags: favorite | avoid | never-again | love-the-sauce | portion-small | ...
+Notes: [free-text — anything the user said about this item]
+Last ordered: YYYY-MM-DD
+
+## [Brand] — [Item Name]
+Rating: X/5
+Notes: ...
+```
+
+**Writing reviews:** Users can say anything — Claude parses it:
+- "The Mongolian Beef bento is amazing, always order it" → rating 5/5, tag favorite
+- "The poke bowl was too salty and overpriced, don't order again" → rating 1/5, tag never-again
+- "I liked the Lanzhou noodles but the portion felt small" → rating 3/5, tag portion-small
+- "For the bento with rice, I always prefer purple rice" → option preference note
+
+Append new reviews; update existing entries if the same item is reviewed again (keep last rating, append notes with date).
 
 ---
 
