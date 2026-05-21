@@ -105,31 +105,60 @@ Then write the new enriched objects to `favorites.json` and `hidden.json`.
     if (all.length >= j.data.totalCount) break;
     pageIndex++;
   }
-  // Filter to status === "Paid" (active), flatten by package
+  // Also derive shipping-windows from package's extShippingTimeSection
+  const shippingWindows = {};
+  // Filter to active + flatten by package
   const active = [];
   for (const r of all) {
-    if (r.order?.status !== 'Paid') continue;
     for (const pkg of (r.orderPackages || [])) {
+      const ts = pkg.timeShipping;
+      const ext = pkg.extShippingTimeSection;
+      if (ext && !shippingWindows[ts]) {
+        shippingWindows[ts] = {
+          shippingTimeSectionId: pkg.shippingTimeSectionId,
+          extFormCutoff: ext.extFormCutoff,
+          extFormShippingBegin: ext.extFormShippingBegin,
+          extFormShippingEnd: ext.extFormShippingEnd,
+          cutoff_local_ms: ext.cutoff,
+          shippingBegin_local_ms: ext.shippingBegin,
+          shippingEnd_local_ms: ext.shippingEnd
+        };
+      }
+      if (r.order?.status !== 'Paid') continue;
       const items = (pkg.extItems || []).map(it => ({
         productId: it.productId,
         productSpecialId: it.productSpecialId,
+        portionId: it.portionId,
         quantity: it.quantity,
         price: (it.pricePerUnitCents ?? it.priceCents ?? 0) / 100
       }));
       active.push({
         orderId: 'No.' + r.order.id,
         dateShippingMs: pkg.dateShipping,
-        timeShipping: pkg.timeShipping,
+        timeShipping: ts,
         total: r.order.totalCharge || 0,
         items
       });
     }
   }
-  return JSON.stringify({ totalFetched: all.length, activeCount: active.length, orders: active });
+  return JSON.stringify({ totalFetched: all.length, activeCount: active.length, shippingWindows, orders: active });
 })()
 ```
 
 **Default loop bound:** stop early once you've fetched `history_window_days × 1.5` worth (≈ 30 weeks ≈ 60 pages ≈ 6 seconds). If the user says "pull all my history", remove that bound and fetch all `totalCount` orders.
+
+**Write `shipping-windows.json`** in `~/Documents/WeBox/`:
+```json
+{
+  "synced_at": "2026-05-21T14:30:00Z",
+  "windows": {
+    "Lunch":  { "shippingTimeSectionId": 27274, "extFormCutoff": "08:00", "extFormShippingBegin": "11:00", "extFormShippingEnd": "12:30", "cutoff_local_ms": 28800000, "shippingBegin_local_ms": 39600000, "shippingEnd_local_ms": 45000000 },
+    "Dinner": { "shippingTimeSectionId": 27275, "extFormCutoff": "14:30", "extFormShippingBegin": "17:00", "extFormShippingEnd": "18:30", "cutoff_local_ms": 52200000, "shippingBegin_local_ms": 61200000, "shippingEnd_local_ms": 66600000 }
+  }
+}
+```
+
+Merge with any existing local copy (don't lose a meal type that's in the local file but not in the new sync — e.g., HappyHour that's in older orders we didn't refetch).
 
 ### Convert to per-week JSON
 
@@ -196,18 +225,21 @@ Identify the next 1–2 orderable Lunch slots (and corresponding Dinners if with
       if (!p || hideIds.has(p.id)) return null;
       kitchenId = kitchenId || s.kitchenId;
       shippingTimeSectionId = shippingTimeSectionId || s.shippingTimeSectionId;
+      const portion = (p.extPortions || []).find(x => x.isDefault) || (p.extPortions || [])[0];
       return {
-        productSpecialId: s.id, productId: p.id, portionId: s.portionId, cutoffTime: s.cutoffTime,
         name: p.extName?.enUs,
         brand: brandById.get(p.brandId)?.extName?.enUs,
         price: s.price,
-        rating: p.averageRating || null,
         category: p.category,
+        rating: p.averageRating || null,
         in_favorites: favIds.has(p.id),
         dietary: {
           glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
           nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
-        }
+        },
+        productId: p.id, productSpecialId: s.id,
+        portionId: portion?.id || null,                  // from product.extPortions (isDefault preferred)
+        portionCount: (p.extPortions || []).length       // >1 means user-facing portion choice exists
       };
     })
     .filter(Boolean);

@@ -13,12 +13,24 @@ First-time setup. Populates `~/Documents/WeBox/` with everything subsequent skil
 
 - `preferences.md` — your settings (from your onboarding answer)
 - `user-profile.json` — `{firstName, lastName, phone, email, timezone, id}` (required for Place Order)
-- `address-info.json` — `{addressId, kitchenId, timezone, address1, city}` (required for Place Order)
-- `favorites.json` — `{productIdList, brandIdList, synced_at}` (hearted items)
-- `hidden.json` — `{productIdList, brandIdList, synced_at}` (Not-Interested items)
+- `address-info.json` — `{addressId, userAddressId, kitchenId, timezone, address1, city, ...}` (required for Place Order)
+- `shipping-windows.json` — per-meal `{shippingTimeSectionId, extFormCutoff, ...}` derived from past orders (required for Place Order body)
+- `favorites.json` — enriched `{products: [{id, name, brand, category}], unresolvedProductIds, brands, synced_at}`
+- `hidden.json` — same shape ("Not Interested" items)
 - `orders/YYYY-Www.json` — per-ISO-week order history (active orders only)
 - `menu-cache/<TOMORROW>-Lunch.json` — warm cache for the first order
 - `item-reviews.md` — empty stub
+
+### Different users / addresses
+
+Each WeBox user has their own delivery address (or multiple). The skill is per-user-correct because every value is derived dynamically from the WeBox API — nothing is hardcoded:
+
+- `addressId` (e.g., 240212) is the **physical address record** shared by anyone delivering there. Used by all menu/order/tax APIs.
+- `userAddressId` (e.g., 459170) is **your account's link** to that address. Per-user.
+- `kitchenId` is **per-address** — different addresses may be served by different WeBox kitchens, each with their own menu and (potentially) their own `shippingTimeSectionId` per meal.
+- `shipping-windows.json` is derived from the user's own order history, so it inherently reflects their kitchen's schedule.
+
+When this skill runs for a different user, all values come from their `/api/v2/userAddresses/my` and `/api/orders/list`. The skill makes zero assumptions about specific IDs.
 
 ---
 
@@ -80,7 +92,7 @@ Say:
 
 ## Step 4: Fetch Identity + Address Only
 
-After the user replies, fetch identity. The favorites/hidden enrichment happens in Step 6 (after the menu is fetched, so we can enrich IDs → names).
+After the user replies, fetch identity. The favorites/hidden enrichment happens in Step 6 (after the menu is fetched, so we can resolve IDs → names).
 
 ```javascript
 (async () => {
@@ -90,6 +102,7 @@ After the user replies, fetch identity. The favorites/hidden enrichment happens 
   ]);
   const addrs = Array.isArray(addresses.data) ? addresses.data : (addresses.data?.list || []);
   const defaultAddr = addrs.find(a => a.isDefault) || addrs[0] || null;
+  const ext = defaultAddr?.extAddress || {};
   return JSON.stringify({
     profile: profile.data ? {
       id: profile.data.id,
@@ -97,29 +110,46 @@ After the user replies, fetch identity. The favorites/hidden enrichment happens 
       lastName: profile.data.lastName,
       phone: profile.data.phone,
       email: profile.data.email,
-      timezone: profile.data.timezone || defaultAddr?.timezone || 'America/Los_Angeles'
+      timezone: profile.data.timezone || ext.timezone || 'America/Los_Angeles'
     } : null,
     address: defaultAddr ? {
-      addressId: defaultAddr.id,
-      kitchenId: defaultAddr.kitchenId,
-      timezone: defaultAddr.timezone,
-      address1: defaultAddr.address1,
-      city: defaultAddr.city
+      addressId:      defaultAddr.addressId,   // canonical — used by /api/productSpecials/.../address/<X>/..., POST /api/orders, etc.
+      userAddressId:  defaultAddr.id,          // your account's link to the address — used only by address-book mutations
+      kitchenId:      ext.kitchenId,
+      timezone:       ext.timezone,
+      address1:       ext.address1,
+      address2:       ext.address2,
+      city:           ext.city,
+      state:          ext.state,
+      postcode:       ext.postcode
     } : null
   });
 })()
 ```
 
+**The two address IDs explained:**
+
+| Field | Example | What it identifies |
+|---|---|---|
+| `addressId` | 240212 | **The canonical address record.** This is what every WeBox API uses: `/api/productSpecials/v8/address/<addressId>/...`, the menu API, the Place Order body's `order.addressId`, tax-rate, kitchen lookup, etc. |
+| `userAddressId` | 459170 | The user-address association — the pointer in your account's address book. Useful only for address-book operations (set default, delete an address). NOT used in ordering. |
+| `kitchenId` | 12838 | Which WeBox kitchen serves that address. From `extAddress.kitchenId`. Needed in the Place Order body. |
+| `timezone` | "America/Los_Angeles" | The address's local timezone. From `extAddress.timezone`. Needed in the Place Order body. |
+
 Write each field to its own JSON file in `~/Documents/WeBox/`:
 - `user-profile.json` ← `profile`
-- `address-info.json` ← `address`
+- `address-info.json` ← `address` (now includes both `addressId` and `userAddressId` for completeness)
 
 If `address` is null (no registered delivery address), stop:
 > You don't have a delivery address set on WeBox yet. Please add one at webox.com first, then run `/webox-onboard` again.
 
 ---
 
-## Step 5: Fetch Order History via Paginated API
+## Step 5: Fetch Order History via Paginated API + Derive Shipping Windows
+
+This step does two things from the same fetch:
+1. Build per-week order history files
+2. Build `shipping-windows.json` from `orderPackages[].extShippingTimeSection` — the per-meal `shippingTimeSectionId` and `extFormCutoff` needed for Place Order body assembly later
 
 ```javascript
 (async () => {
@@ -134,29 +164,80 @@ If `address` is null (no registered delivery address), stop:
     if (all.length >= j.data.totalCount) break;
     pageIndex++;
   }
-  // Filter to active only + flatten the per-package structure
+  // Derive shipping-windows map: timeShipping → {shippingTimeSectionId, extFormCutoff, ...}
+  const shippingWindows = {};
+  // Filter to active + flatten the per-package structure
   const active = [];
   for (const r of all) {
-    if (r.order?.status !== 'Paid') continue;
     for (const pkg of (r.orderPackages || [])) {
+      const ts = pkg.timeShipping;
+      const ext = pkg.extShippingTimeSection;
+      // Capture shipping window once per meal type (any order suffices)
+      if (ext && !shippingWindows[ts]) {
+        shippingWindows[ts] = {
+          shippingTimeSectionId: pkg.shippingTimeSectionId,
+          extFormCutoff: ext.extFormCutoff,
+          extFormShippingBegin: ext.extFormShippingBegin,
+          extFormShippingEnd: ext.extFormShippingEnd,
+          cutoff_local_ms: ext.cutoff,        // ms-from-local-midnight (e.g., 28800000 = 08:00 local)
+          shippingBegin_local_ms: ext.shippingBegin,
+          shippingEnd_local_ms: ext.shippingEnd
+        };
+      }
+      if (r.order?.status !== 'Paid') continue;
       const items = (pkg.extItems || []).map(it => ({
         productId: it.productId,
         productSpecialId: it.productSpecialId,
+        portionId: it.portionId,
         quantity: it.quantity,
         price: (it.pricePerUnitCents ?? it.priceCents ?? 0) / 100
       }));
       active.push({
         orderId: 'No.' + r.order.id,
         dateShippingMs: pkg.dateShipping,
-        timeShipping: pkg.timeShipping,
-        total: (r.order.totalCharge || 0),
+        timeShipping: ts,
+        total: r.order.totalCharge || 0,
         items
       });
     }
   }
-  return JSON.stringify({ totalFetched: all.length, activeCount: active.length, orders: active });
+  return JSON.stringify({
+    totalFetched: all.length,
+    activeCount: active.length,
+    shippingWindows,
+    orders: active
+  });
 })()
 ```
+
+**Write `~/Documents/WeBox/shipping-windows.json`** with the `shippingWindows` field:
+```json
+{
+  "synced_at": "2026-05-21T14:30:00Z",
+  "windows": {
+    "Lunch": {
+      "shippingTimeSectionId": 27274,
+      "extFormCutoff": "08:00",
+      "extFormShippingBegin": "11:00",
+      "extFormShippingEnd": "12:30",
+      "cutoff_local_ms": 28800000,
+      "shippingBegin_local_ms": 39600000,
+      "shippingEnd_local_ms": 45000000
+    },
+    "Dinner": {
+      "shippingTimeSectionId": 27275,
+      "extFormCutoff": "14:30",
+      "extFormShippingBegin": "17:00",
+      "extFormShippingEnd": "18:30",
+      "cutoff_local_ms": 52200000,
+      "shippingBegin_local_ms": 61200000,
+      "shippingEnd_local_ms": 66600000
+    }
+  }
+}
+```
+
+**Brand-new users (zero past orders):** `shipping-windows.json` will be empty. The first time the user places an order, `webox-order` will detect the missing entry, fall back to the DOM-driven path for ONE order to capture the shippingTimeSection, then save it. After that first order, future orders use the API path. (Most users have order history, so this fallback rarely triggers.)
 
 Convert each entry to a per-week JSON file. ISO-week computation:
 
@@ -260,18 +341,21 @@ This step does three things in one menu fetch:
       if (!p || hideIds.has(p.id)) return null;
       kitchenId = kitchenId || s.kitchenId;
       shippingTimeSectionId = shippingTimeSectionId || s.shippingTimeSectionId;
+      const portion = (p.extPortions || []).find(x => x.isDefault) || (p.extPortions || [])[0];
       return {
-        productSpecialId: s.id, productId: p.id, portionId: s.portionId, cutoffTime: s.cutoffTime,
         name: p.extName?.enUs,
         brand: brandById.get(p.brandId)?.extName?.enUs,
         price: s.price,
-        rating: p.averageRating || null,
         category: p.category,
+        rating: p.averageRating || null,
         in_favorites: favIds.has(p.id),
         dietary: {
           glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
           nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
-        }
+        },
+        productId: p.id, productSpecialId: s.id,
+        portionId: portion?.id || null,                  // from product.extPortions (isDefault preferred)
+        portionCount: (p.extPortions || []).length       // >1 means user-facing portion choice exists
       };
     })
     .filter(Boolean);

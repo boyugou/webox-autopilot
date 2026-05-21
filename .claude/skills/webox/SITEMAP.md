@@ -106,24 +106,24 @@ Body shape (every value traceable):
     "lastName":   "<from /api/users/my>",
     "phone":      "<from /api/users/my>",
     "email":      "<from /api/users/my>",
-    "timezone":   "<from /api/v2/userAddresses/my>",
-    "addressId":  240212,    // from /api/v2/userAddresses/my
-    "kitchenId":  12838,     // from same
+    "timezone":   "<from extAddress.timezone>",        // /api/users/my does NOT return timezone
+    "addressId":  240212,                              // defaultAddr.addressId (NOT defaultAddr.id)
+    "kitchenId":  12838,                               // defaultAddr.extAddress.kitchenId
     "currency":   "Dollar",
     "autoSelectCoupon": true
   },
   "orderPackages": [{
     "extItems": [{
-      "productSpecialId": 56813079,   // lunchSpecials[i].id
-      "portionId":        144251,      // lunchSpecials[i].portionId
+      "productSpecialId": 56813079,                    // lunchSpecials[i].id
+      "portionId":        144251,                      // products[i].extPortions.find(x => x.isDefault).id
       "quantity":         1,
-      "cutoffTime":       1779462000000,
+      "cutoffTime":       1779462000000,               // LOCAL extFormCutoff time on target date, converted to UTC ms
       "extCartItemId":    "2026-05-22__27274__56813079__144251",  // <date>__<shipSecId>__<specId>__<portionId>
       "extChildren":      []
     }],
-    "dateShipping":           1779408000000,   // midnight unix ms of target date
+    "dateShipping":           1779408000000,           // UTC midnight of target date: new Date(date + 'T00:00:00Z').getTime()
     "timeShipping":           "Lunch",
-    "shippingTimeSectionId":  27274,            // from lunchSpecials[i].shippingTimeSectionId
+    "shippingTimeSectionId":  27274,                   // per-meal constant; derive from past orders' extShippingTimeSection
     "kitchenId":              12838,
     "extCutleryQuantity":     0,
     "extBaseCutleryQuantity": 1
@@ -132,11 +132,25 @@ Body shape (every value traceable):
   "realTips":           0,
   "usePersonalWeBucks": true,
   "hasAddedWeBucks":    false,
-  "suggestPoint":       -596734
+  "suggestPoint":       -596734                        // any negative integer is accepted; the page computes via budget API
 }
 ```
 
-Response: `{ code: 1, data: { id: <orderNumber>, ... } }`. The order is placed immediately on success.
+**Where each field comes from — important nuances:**
+
+| Place Order field | Source | Notes |
+|---|---|---|
+| `order.addressId` | `defaultAddr.addressId` from `/api/v2/userAddresses/my` | This is the **canonical address record** (e.g., 240212). NOT `defaultAddr.id` (459170, which is the user-address association). |
+| `order.kitchenId` | `defaultAddr.extAddress.kitchenId` | Nested inside `extAddress`, not at the top level. |
+| `order.timezone` | `defaultAddr.extAddress.timezone` | `/api/users/my` does NOT include timezone — must come from the address. |
+| `extItems[].portionId` | `products[i].extPortions.find(x => x.isDefault).id` | Every product has at least one portion. 81 of ~2400 products have multiple (small/regular/large); use `isDefault` or first. |
+| `extItems[].cutoffTime` | `new Date(date + 'T' + extFormCutoff + ':00').getTime()` | LOCAL (user timezone) interpretation of "HH:MM" on the shipping date, converted to epoch ms. `extFormCutoff` lives in `extShippingTimeSection.extFormCutoff` from past orders. |
+| `orderPackages[].dateShipping` | `new Date(date + 'T00:00:00Z').getTime()` | UTC midnight of the shipping date — explicit `Z` matters. |
+| `orderPackages[].shippingTimeSectionId` | Per-meal constant for the user's kitchen. Lunch=27274, Dinner=27275 for kitchen 12838. **Derive from `orderPackages[].shippingTimeSectionId` in past orders** — varies by kitchen. |
+
+**Response:** `{ code: 1, data: { id: <orderNumber>, ... } }`. The order is placed immediately on success.
+
+**These IDs and times CANNOT be derived from the menu API alone.** The menu API gives you `productSpecialId` and `productId`, but `shippingTimeSectionId` + `extFormCutoff` come from past orders' `extShippingTimeSection` records, and `portionId` comes from `products[].extPortions`. The skill caches all three in `shipping-windows.json` and the menu cache.
 
 ### Order modifications (path-templated in bundle; capture-on-action before use)
 

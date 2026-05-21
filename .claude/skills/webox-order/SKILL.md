@@ -45,7 +45,8 @@ Extract `budget`, `budget_mode`, `validate_budget`, `confirm_before_order`, `def
 
 ### 1b. Identity caches (JSON)
 - `user-profile.json` → `{firstName, lastName, phone, email, timezone}` (for Place Order body)
-- `address-info.json` → `{addressId, kitchenId, timezone}` (for Place Order body and menu URL)
+- `address-info.json` → `{addressId, userAddressId, kitchenId, timezone}` (`addressId` is the canonical address record; `userAddressId` is your account's link — Place Order uses `addressId`, not `userAddressId`)
+- `shipping-windows.json` → `{windows: {Lunch: {shippingTimeSectionId, extFormCutoff, ...}, Dinner: {...}}}` (derived from past orders by webox-onboard/sync)
 - `favorites.json` → `{products: [{id, name, brand, category}], unresolvedProductIds: [], brands: [], synced_at}`. Derive the favorite-ID Set in JS: `new Set(favorites.products.map(p => p.id).concat(favorites.unresolvedProductIds))`.
 - `hidden.json` → same shape. Derive the hidden-ID Set similarly.
 
@@ -85,32 +86,43 @@ Read `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`. If `cached_at < 60 minut
   const brandById   = new Map(productBrands.map(b => [b.id, b]));
   const favIds  = new Set(/* favorites.json: products.map(p => p.id).concat(unresolvedProductIds) */);
   const hideIds = new Set(/* hidden.json: products.map(p => p.id).concat(unresolvedProductIds) */);
-  let kitchenId = null, shippingTimeSectionId = null;
+  let kitchenId = null;
   const items = specials
     .filter(s => s.stockStatus !== 'outofstock')
     .map(s => {
       const p = productById.get(s.productId);
       if (!p || hideIds.has(p.id)) return null;
       kitchenId = kitchenId || s.kitchenId;
-      shippingTimeSectionId = shippingTimeSectionId || s.shippingTimeSectionId;
+      // Resolve default portion (most products have one; bowls/bento may have small/regular/large)
+      const portion = (p.extPortions || []).find(x => x.isDefault) || (p.extPortions || [])[0];
+      // Field order matters for human readability when opening the JSON in Finder:
+      // readable fields first, opaque IDs last (they're for Place Order body assembly).
       return {
-        productSpecialId: s.id, productId: p.id, portionId: s.portionId, cutoffTime: s.cutoffTime,
         name:  p.extName?.enUs,
         brand: brandById.get(p.brandId)?.extName?.enUs,
         price: s.price,
-        rating: p.averageRating || null,
         category: p.category,
+        rating: p.averageRating || null,
         in_favorites: favIds.has(p.id),
         dietary: {
           glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
           nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
-        }
+        },
+        // IDs needed only for Place Order body (Step 6) — agent plans against name/brand/etc above
+        productId: p.id,
+        productSpecialId: s.id,
+        portionId: portion?.id || null,                      // from product.extPortions (isDefault preferred)
+        portionCount: (p.extPortions || []).length            // >1 = user-facing portion choice exists
       };
     })
     .filter(Boolean);
-  return JSON.stringify({ date, meal, kitchenId, shippingTimeSectionId, items });
+  return JSON.stringify({ date, meal, kitchenId, items });
 })()
 ```
+
+**What the agent plans against:** each cached item has name, brand, price, category, rating, in_favorites, dietary flags — all the fields needed for selection. The IDs (`productId`, `productSpecialId`, `portionId`) are metadata at the END of each entry; the agent doesn't read them during planning, only when assembling the Place Order body in Step 6.
+
+**`shippingTimeSectionId` is NOT in the menu cache** — it's per-meal (constant within a kitchen), stored once in `shipping-windows.json` by webox-onboard / webox-sync, not duplicated per item.
 
 Write the result to `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`:
 ```json
@@ -233,7 +245,6 @@ For each slot, write/merge into `~/Documents/WeBox/orders/YYYY-Www.json` with `p
   "items": [
     {
       "productSpecialId": 56813079, "productId": 499852, "portionId": 144251,
-      "cutoffTime": 1779462000000, "shippingTimeSectionId": 27274, "kitchenId": 12838,
       "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "price": 17.45, "quantity": 1
     }
   ]
@@ -246,12 +257,21 @@ For each slot, write/merge into `~/Documents/WeBox/orders/YYYY-Www.json` with `p
 
 ## Step 6: Place Each Order via API (sequential)
 
-For each slot in the plan, call `POST /api/orders` with the body assembled from the planned items + identity caches.
+For each slot in the plan, call `POST /api/orders` with the body assembled from:
+- The planned items (with `productSpecialId`, `portionId`, `quantity`)
+- `~/Documents/WeBox/user-profile.json` (identity)
+- `~/Documents/WeBox/address-info.json` (`addressId`, `kitchenId`, `timezone`)
+- `~/Documents/WeBox/shipping-windows.json` (the per-meal `shippingTimeSectionId` and `extFormCutoff`)
 
 ```javascript
-(async (slot, profile, address) => {
-  const first = slot.items[0];  // all items in a slot share shippingTimeSectionId and kitchenId
-  const dateShipping = new Date(slot.date + 'T00:00:00').getTime();
+(async (slot, profile, address, shippingWindows) => {
+  const win = shippingWindows.windows[slot.meal];
+  if (!win) throw new Error(`No shipping window for ${slot.meal} — derive from past orders first or use DOM fallback.`);
+  // dateShipping = UTC midnight of the shipping date (WeBox's canonical form)
+  const dateShipping = new Date(slot.date + 'T00:00:00Z').getTime();
+  // cutoffTime = LOCAL extFormCutoff time on the shipping date, as ms since epoch.
+  // We rely on the browser's local timezone matching the user's WeBox timezone (it should).
+  const cutoffTime = new Date(slot.date + 'T' + win.extFormCutoff + ':00').getTime();
   const body = {
     order: {
       firstName: profile.firstName,
@@ -259,7 +279,7 @@ For each slot in the plan, call `POST /api/orders` with the body assembled from 
       phone:     profile.phone,
       email:     profile.email,
       timezone:  profile.timezone || address.timezone || 'America/Los_Angeles',
-      addressId: address.addressId,
+      addressId: address.addressId,                // CANONICAL — not userAddressId
       kitchenId: address.kitchenId,
       currency:  'Dollar',
       autoSelectCoupon: true
@@ -269,14 +289,14 @@ For each slot in the plan, call `POST /api/orders` with the body assembled from 
         productSpecialId: it.productSpecialId,
         portionId:        it.portionId,
         quantity:         it.quantity,
-        cutoffTime:       it.cutoffTime,
-        extCartItemId:    `${slot.date}__${first.shippingTimeSectionId}__${it.productSpecialId}__${it.portionId}`,
+        cutoffTime:       cutoffTime,
+        extCartItemId:    `${slot.date}__${win.shippingTimeSectionId}__${it.productSpecialId}__${it.portionId}`,
         extChildren:      []
       })),
       dateShipping,
       timeShipping:           slot.meal,
-      shippingTimeSectionId:  first.shippingTimeSectionId,
-      kitchenId:              first.kitchenId,
+      shippingTimeSectionId:  win.shippingTimeSectionId,
+      kitchenId:              address.kitchenId,
       extCutleryQuantity:     0,
       extBaseCutleryQuantity: 1
     }],
@@ -292,8 +312,10 @@ For each slot in the plan, call `POST /api/orders` with the body assembled from 
   });
   const j = await r.json();
   return JSON.stringify({ status: r.status, code: j.code, msg: j.msg || j.message, orderId: j.data?.id });
-})(<slot>, <profile>, <address>)
+})(<slot>, <profile>, <address>, <shippingWindows>)
 ```
+
+**If `shipping-windows.json` is empty or missing the meal type** (rare — only on brand-new accounts with zero history): fall back to the DOM path for that one order (navigate to `/?date=X&shippingTime=Y`, DOM-click an item, navigate to `/checkout`, intercept the Place Order POST to learn the `shippingTimeSectionId`, then write it to `shipping-windows.json` for future orders). After the first successful order, all subsequent orders use the API path.
 
 **On success** (`code === 1`, `orderId` returned):
 - Update the per-week JSON entry: remove `planned: true`, add `"orderId": "No.<id>"`

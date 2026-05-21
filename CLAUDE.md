@@ -95,7 +95,8 @@ Wipe my WeBox data and start over.
 `~/Documents/WeBox/` (visible in Finder, plain text + JSON, edit freely):
 - `preferences.md` — all settings (budget, diet, cuisines, etc.)
 - `user-profile.json` — `{firstName, lastName, phone, email, timezone}` (needed for Place Order)
-- `address-info.json` — `{addressId, kitchenId, timezone}` (needed for Place Order)
+- `address-info.json` — `{addressId, userAddressId, kitchenId, timezone, ...}` (needed for Place Order). `addressId` is the canonical address record; `userAddressId` is your account's link to it (distinct).
+- `shipping-windows.json` — `{windows: {Lunch: {shippingTimeSectionId, extFormCutoff, ...}, Dinner: {...}}}`. Per-meal constants derived from past orders. Required for Place Order body.
 - `favorites.json` — enriched: `{products: [{id, name, brand, category}], unresolvedProductIds, brands, synced_at}`. Human-readable in Finder.
 - `hidden.json` — same shape ("Not Interested" items)
 - `orders/YYYY-Www.json` — per-ISO-week order history (active orders only)

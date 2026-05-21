@@ -174,7 +174,8 @@ All in `~/Documents/WeBox/` — plain text + JSON, edit freely.
 |---|---|
 | `preferences.md` | All settings. Created by onboarding, editable forever. |
 | `user-profile.json` | `{firstName, lastName, phone, email, timezone}` — needed for Place Order. |
-| `address-info.json` | `{addressId, kitchenId, timezone}` — needed for Place Order. |
+| `address-info.json` | `{addressId, userAddressId, kitchenId, timezone, ...}` — needed for Place Order. `addressId` is the canonical address record (e.g., 240212); `userAddressId` is your account's link (e.g., 459170). Distinct concepts. |
+| `shipping-windows.json` | Per-meal constants (`shippingTimeSectionId`, `extFormCutoff`) derived from past orders. Required for Place Order body assembly. |
 | `favorites.json` | Hearted items, enriched: `{products: [{id, name, brand, category}], unresolvedProductIds, brands, synced_at}`. Human-readable in Finder. |
 | `hidden.json` | Same shape — "Not Interested" items. |
 | `orders/YYYY-Www.json` | Per-ISO-week order history (active orders only). |
