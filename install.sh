@@ -3,27 +3,36 @@
 # Usage: bash install.sh
 set -e
 
-SKILL_DIR="$HOME/.claude/skills/webox-order"
+SKILLS_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.claude/skills"
+CLAUDE_SKILLS="$HOME/.claude/skills"
 PREFS_DIR="$HOME/.webox-autopilot"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "Installing webox-order skill..."
+echo "Installing webox-autopilot skills..."
 
-mkdir -p "$SKILL_DIR"
-cp "$SCRIPT_DIR/.claude/skills/webox-order/SKILL.md" "$SKILL_DIR/"
-echo "  ✓ Skill installed to $SKILL_DIR"
+# Install all three skills
+for skill in webox-order webox-calendar webox-sync-favorites; do
+  mkdir -p "$CLAUDE_SKILLS/$skill"
+  cp "$SKILLS_SRC/$skill/SKILL.md" "$CLAUDE_SKILLS/$skill/"
+  echo "  ✓ $skill → $CLAUDE_SKILLS/$skill/"
+done
 
+# Set up preferences directory and template (never overwrite existing)
 mkdir -p "$PREFS_DIR"
 if [ ! -f "$PREFS_DIR/user-preferences.md" ]; then
-  cp "$SCRIPT_DIR/user-preferences.md" "$PREFS_DIR/"
-  echo "  ✓ Preferences template created at $PREFS_DIR/user-preferences.md"
-  echo "    → Edit this file to set your budget, cuisines, dietary restrictions, etc."
+  cp "$(dirname "${BASH_SOURCE[0]}")/user-preferences.md" "$PREFS_DIR/"
+  echo "  ✓ Preferences template → $PREFS_DIR/user-preferences.md"
+  echo "    (Edit this file to set your budget, cuisines, dietary restrictions, etc.)"
 else
-  echo "  ✓ Preferences file already exists at $PREFS_DIR/user-preferences.md (not overwritten)"
+  echo "  ✓ Preferences already exist at $PREFS_DIR/user-preferences.md (not overwritten)"
 fi
 
 echo ""
-echo "Done! Start Claude Code with Chrome integration:"
+echo "Done! Skills installed:"
+echo "  webox-order          — order meals autonomously"
+echo "  webox-calendar       — view and sync your order calendar"
+echo "  webox-sync-favorites — refresh your favorites list"
+echo ""
+echo "Start Claude Code with Chrome integration:"
 echo "  claude --chrome"
 echo ""
 echo "Then tell Claude: \"Order my lunch for tomorrow.\""

@@ -1,2 +1,28 @@
+# macOS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V8
+.Trashes
+
+# Local test and dev files — never commit these
 *.local
+*.test
+*.tmp
+test-*
+dev-*
+
+# Local user data — lives in ~/.webox-autopilot/, not in the repo
+user-preferences.local.md
+favorites-cache.md
+order-history-cache.json
+order-calendar.md
+plan-cache.md
+item-reviews.md
+items-with-options.md
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo

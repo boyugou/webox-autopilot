@@ -24,6 +24,8 @@ Claude Code reads `CLAUDE.md` in this repo and handles the rest automatically.
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
+Both options install all three skills: `webox-order`, `webox-calendar`, and `webox-sync-favorites`.
+
 ## Requirements
 
 - [Claude Code](https://claude.ai/code) (any recent version)
@@ -262,13 +264,21 @@ A: WeBox allows up to 7 days ahead. The skill won't attempt dates outside this w
 **Q: How do I reset the favorites cache?**  
 A: Tell Claude "refresh my favorites" and it will re-scrape and overwrite the cache.
 
+## Skills
+
+| Skill | Invoke by saying | Purpose |
+|-------|-----------------|---------|
+| `webox-order` | "Order my lunch for tomorrow" | Full ordering flow — scrape, select, cart, checkout |
+| `webox-calendar` | "Show my WeBox calendar" / "Sync my order history" | View this week + next week, sync from WeBox, maintain long-term local record |
+| `webox-sync-favorites` | "Refresh my favorites" | Re-scrape favorites page, diff against cache, show what changed |
+
 ## Updating
 
 ```bash
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Your `~/.webox-autopilot/` directory is never touched by updates — preferences and cache files are safe.
+Your `~/.webox-autopilot/` directory (preferences, reviews, caches) is never touched by updates.
 
 ## Contributing
 
