@@ -22,35 +22,83 @@ Hide all sugary drinks.
 
 ---
 
-## Quick Install
+## Setup (do these once, in order)
 
-**Option A — let Claude Code install it:**
+### 1. Prerequisites
 
-```
-Install webox-autopilot from https://github.com/boyugou/webox-autopilot, then run /webox-onboard.
-```
+- [Claude Code](https://claude.ai/code) (any recent version)
+- A direct Anthropic plan (Pro, Max, Team, or Enterprise)
+- Google Chrome with the **[Claude in Chrome](https://code.claude.com/docs/en/chrome)** extension installed and signed in
+- An active [WeBox](https://webox.com) account, **logged in** in that Chrome (the skill reuses your browser session — it never asks for credentials)
 
-Claude Code reads `CLAUDE.md` and follows the install steps automatically.
+### 2. Grant Chrome's "automatic downloads" permission for webox.com
 
-**Option B — one-liner (also works for updates):**
+This is **required** for the fast path. Without it, the skill works but falls back to chunked retrieval that's ~10× slower at onboarding time (and noticeably slower per order).
+
+Steps:
+
+1. Open Chrome and go to `chrome://settings/content/automaticDownloads`
+2. Under **"Allowed to automatically download multiple files"**, click **Add**
+3. Enter `[*.]webox.com` and save
+
+Why: the skill writes its data files (favorites, hidden, menu cache, order history) by triggering a Blob download via JS. The file lands in your `~/Downloads`, then Claude Code's Bash moves it into `~/Documents/WeBox/`. Chrome silently blocks the 2nd+ automatic download per origin unless you allow it explicitly.
+
+You only do this once. The permission persists across reinstalls, Chrome restarts, and skill updates.
+
+### 3. Install the skills
 
 ```bash
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Either option installs six skills: `webox`, `webox-onboard`, `webox-order`, `webox-favorite`, `webox-sync`, `webox-reset`. **After install, run `/webox-onboard` once** (or say "set up WeBox") for the ~30-second setup.
+This installs six skill directories into `~/.claude/skills/webox*/` and creates an empty `~/Documents/WeBox/` data directory. It does NOT touch any existing data in `~/Documents/WeBox/`.
 
-The same one-liner upgrades to the latest version. Your `~/Documents/WeBox/` data is never touched.
+*Alternative — let Claude Code do it for you:* in any Claude Code session, paste:
+> Install webox-autopilot from https://github.com/boyugou/webox-autopilot, then run /webox-onboard.
 
-**Full reinstall (clean slate — wipe everything + reinstall):**
+### 4. Start Claude Code with Chrome integration
+
+```bash
+claude --chrome
+```
+
+### 5. Run onboarding
+
+In Claude Code:
+
+```
+/webox-onboard
+```
+
+Or say "set up WeBox". Onboarding takes ~30 seconds and:
+
+- Asks one open-ended question about your food preferences (answer in any language)
+- Fetches your profile, address, favorites, hidden list, and order history via the WeBox API
+- Writes everything to `~/Documents/WeBox/` (config.yaml, preferences.md, identity caches, per-week order JSON)
+
+You're now ready to order. Try `Order my lunch for tomorrow.`
+
+---
+
+## Updating
+
+Standard update (everything in `~/Documents/WeBox/` is preserved):
+
+```bash
+git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
+```
+
+Then restart Claude Code so the new skill files are loaded.
+
+Full reinstall — wipe local data + reinstall + re-onboard (one line):
 
 ```bash
 rm -rf ~/Documents/WeBox ~/.claude/skills/webox ~/.claude/skills/webox-onboard ~/.claude/skills/webox-order ~/.claude/skills/webox-favorite ~/.claude/skills/webox-sync ~/.claude/skills/webox-reset && git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Then restart Claude Code (`claude --chrome`) and run `/webox-onboard`.
+Then restart Claude Code and run `/webox-onboard`.
 
-⚠️ This is destructive — `~/Documents/WeBox/` (config.yaml, preferences.md, item-reviews.md, etc.) cannot be recovered. To preserve your reviews/notes, back them up first:
+⚠️ The full-reinstall command is destructive — `~/Documents/WeBox/` (config.yaml, preferences.md, item-reviews.md, etc.) is not recoverable. To preserve your reviews/notes, back them up first:
 
 ```bash
 mv ~/Documents/WeBox ~/Documents/WeBox.backup.$(date +%Y%m%d-%H%M%S)
@@ -58,20 +106,7 @@ mv ~/Documents/WeBox ~/Documents/WeBox.backup.$(date +%Y%m%d-%H%M%S)
 
 Your WeBox account itself (orders, hearts, hidden list) is untouched — it all lives on webox.com and `/webox-onboard` refetches.
 
-## Requirements
-
-- [Claude Code](https://claude.ai/code) (any recent version)
-- Google Chrome with the **[Claude in Chrome](https://code.claude.com/docs/en/chrome)** extension
-- An active WeBox account, logged in to Chrome
-- A direct Anthropic plan (Pro, Max, Team, or Enterprise)
-
-**One-time Chrome setup (recommended — makes onboarding ~3× faster):**
-
-1. Open `chrome://settings/content/automaticDownloads`
-2. Under "Allowed to automatically download multiple files", click **Add**
-3. Paste `[*.]webox.com` and save
-
-This lets the skill write big data files (favorites, hidden, menu cache, order history) to your `~/Downloads` in one shot, where Claude Code's Bash then moves them into `~/Documents/WeBox/`. Without this permission the skill falls back to streaming data in 5-item chunks (~3× slower but functional).
+The Chrome "automatic downloads" permission from setup step 2 is persistent — you don't need to re-grant it after updates or full reinstalls.
 
 ---
 
@@ -317,37 +352,25 @@ A: Tell Claude in any form: "the Mongolian beef was too dry", "love this 5/5", "
 **Q: Can I bulk-hide ("Not Interested") a bunch of items?**
 A: Yes — say "hide all sugary drinks" or "hide everything by Brand X". The `/webox` general skill loops `POST /api/userHide/addHide` over matched items. Confirms with you first.
 
-## Updating
+## What to do when a new version ships
 
-Say "update webox-autopilot" — `/webox-onboard` handles it. Or manually:
+For most version bumps (schema unchanged):
 
-```bash
-git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
-```
+1. Run the **Standard update** one-liner from the [Updating](#updating) section above. Skill files at `~/.claude/skills/webox-*/` get overwritten in place.
+2. **Restart Claude Code** so the new skill files are loaded. (Claude Code reads skills at session start — a session already in progress continues with the old version.)
+3. Continue using normally. Your `~/Documents/WeBox/` data (preferences, history, identity caches, reviews) is preserved.
 
-`~/Documents/WeBox/` is never touched by updates. For a clean-slate wipe + reinstall, see the **Full reinstall** one-liner up in the [Quick Install](#quick-install) section.
+For version bumps that change the local file schema (rare; release notes will say so explicitly):
 
-### What to do when a new version ships
-
-For most version bumps:
-
-1. Run the update one-liner above. Skill files at `~/.claude/skills/webox-*/` get overwritten in place.
-2. **Restart Claude Code** so the new skill files are loaded. (Claude Code reads skills at session start — running skills in an existing session continue with the old version.)
-3. Continue using normally. Your `~/Documents/WeBox/` data (preferences, history, identity caches, reviews) is preserved and stays valid.
-
-For version bumps that change the local file schema (rare, but happens when a new field is added or a file format changes), the release notes / commit message will say so explicitly. In that case:
-
-1. Back up your reviews and notes if you want to keep them:
+1. Back up your reviews and notes:
    ```bash
    cp ~/Documents/WeBox/item-reviews.md ~/Documents/WeBox/item-reviews.md.bak
    cp ~/Documents/WeBox/preferences.md  ~/Documents/WeBox/preferences.md.bak
    cp ~/Documents/WeBox/config.yaml     ~/Documents/WeBox/config.yaml.bak
    ```
-2. Run the **Full reinstall** one-liner (top of README) to wipe + reinstall.
+2. Run the **Full reinstall** one-liner from the [Updating](#updating) section.
 3. Run `/webox-onboard` — it rebuilds the identity caches and history from the WeBox API (your WeBox account is the source of truth and is never touched).
-4. Restore your reviews/notes from the `.bak` files manually, merging any newly-asked-for fields from the fresh config.yaml template.
-
-The Chrome "automatic downloads" permission you set up under [Requirements](#requirements) is **persistent across reinstalls and version updates** — you only have to grant it once.
+4. Manually merge your reviews/notes from the `.bak` files into the fresh `config.yaml` and `preferences.md`.
 
 ## Contributing
 
