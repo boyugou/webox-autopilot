@@ -1,63 +1,83 @@
 ---
 name: webox-order-all
-description: Order food from WeBox using the FULL menu (all cuisine categories). Use when the user explicitly wants to explore beyond favorites — "order something new", "browse the menu", "ignore my favorites", or when the favorites page is blocked. For normal day-to-day ordering, use webox-order instead (it's smart-default and includes favorites + auto-fallback to categories if needed).
+description: Order food from WeBox using the FULL menu (multiple cuisine + food-type categories). Use when the user explicitly wants to explore beyond favorites — "order something new", "browse the menu", "ignore my favorites", or when the favorites page is blocked. For normal day-to-day ordering, use webox-order instead (smart-default: favorites + auto-fallback).
 ---
 
 # WeBox Order — Full Menu Variant
 
-This is a thin variant of `webox-order` that scrapes the FULL menu (all eligible cuisine categories) instead of favorites-first. Use this only when the user explicitly wants full-menu exploration or when favorites is unavailable.
+Thin variant of `webox-order`. Same flow for everything except Step 3.
 
-**For everything except Step 3, follow `~/.claude/skills/webox-order/SKILL.md` exactly.** Read that file first (Read tool, full content), then apply the Step 3 override below.
+For everything except Step 3, follow `~/.claude/skills/webox-order/SKILL.md` exactly. Read it first (the full content), then apply the Step 3 override below.
 
-## Step 3 override: scrape all categories (skip favorites)
+Also read `~/.claude/skills/webox-order/SITEMAP.md` for URL patterns and DOM reference.
 
-Instead of `webox-order`'s "favorites-first with smart fallback", do this:
+---
 
-### 3a. Cache check (same as webox-order)
+## Step 3 override: scrape categories (skip favorites)
 
-Check `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`. If fresh AND its `sources` array covers what you'd scrape (i.e., it's from a previous webox-order-all run), use it. Otherwise scrape fresh.
+Instead of `webox-order`'s "favorites-first with smart fallback", scrape across cuisine + food-type categories.
 
-### 3b. Determine which categories to scrape
+### Cache check (same as webox-order)
+
+Check `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`. If fresh AND its `sources` includes the categories you intended to scrape, use it.
+
+### Choose which categories to scrape
 
 Apply `category_mode` from preferences:
-- `all` (default for this skill — overrides preference if absent) → every category in the URL table
+- `all` (default for this skill) → scrape every category in SITEMAP.md tables
 - `whitelist` → only categories in `category_list`
 - `blacklist` → all categories EXCEPT those in `category_list`
 
-Always include `preferred_cuisines` even if a filter would exclude them. Skip everything in `cuisines_to_avoid`.
+Always include `preferred_cuisines`. Skip `cuisines_to_avoid`. If user prompt requests a specific cuisine, scrape that one for the main and filler categories (Drink, Side, Snack, Produce, Dairy & Eggs) for budget-filling.
 
-If the user prompt requests a specific cuisine ("I want Thai today"), restrict the MAIN to that cuisine. Still scrape filler categories (Drink, Side, Snack, Dairy & Eggs, Produce) for budget-filling.
+### Scrape sequentially (NOT parallel)
 
-### 3c. Parallel scraping (waves of 5 tabs)
+**One tab, one category at a time, foreground.** Parallel tabs may return partial lazy-load results.
 
-See `webox-order/SKILL.md` Step 3 "Parallel Multi-Tab Execution" for the exact `browser_batch` pattern. For ~30 categories, that's 6 waves of 5 tabs each. Each wave should complete in ~10s thanks to background-tab JS execution.
+Per category, ~5s. 30 categories sequential = ~150s (~2.5 min). For most use cases, scrape only the curated set described above (~7 categories, ~35s).
 
-Use the URL pattern (NOT `/menu/section/X`):
+If the user genuinely wants the full menu, just be patient — set expectation up front:
+> Scraping the full menu — about 2-3 minutes. I'll show progress as each category completes.
+
+For each category:
+1. Navigate to the URL (see SITEMAP.md "Category URLs"):
+   - Cuisines: `?date=X&shippingTime=Y&objType=CUISINE&objId=NAME&objName=NAME`
+   - Food types: `?date=X&shippingTime=Y&objType=CATEGORY&objId=<NUM>&objName=NAME`
+2. Run the menu scrape JS (same as `webox-order` Step 3b)
+3. Accumulate results
+4. Move to next category
+
+⚠️ **Don't use `/menu/section/CATEGORY`** — it silently returns favorites instead of the requested category. Always use the root URL with query params (see SITEMAP.md).
+
+### Discover unknown numeric IDs at runtime
+
+If a food-type category's numeric `objId` isn't in SITEMAP.md, discover it on the first category page:
+```javascript
+(async () => {
+  const target = [...document.querySelectorAll('.category-item-name')].find(e => /^DRINK$/i.test(e.innerText.trim()));
+  target?.click();
+  await new Promise(r => setTimeout(r, 1300));
+  const params = new URLSearchParams((location.href.split('?')[1] || ''));
+  return { objType: params.get('objType'), objId: params.get('objId'), objName: params.get('objName') };
+})()
 ```
-https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=NAME&objName=NAME
-```
 
-Use the URL-encoded category values table from `webox-order/SKILL.md` Step 3.
+### Optionally enrich with favorites
 
-⚠️ Anti-pattern: `/menu/section/X` silently falls back to favorites for non-favorites categories. If two different category scrapes return the same items, you used the wrong URL.
+If you want `in_favorites: true/false` to inform Step 4 selection (useful soft preference), scrape favorites for this slot too (one more URL). Skip if user said "ignore my favorites".
 
-Use the same menu scraping JS as `webox-order` Step 3b.
+### Deduplicate
 
-### 3d. Optional: also scrape favorites for selection bias
+Dedupe by `(brand, name)` key. Same dish often appears in multiple categories (a Chinese snack is in both `Chinese` and `Snack`). Keep one merged entry, accumulate sources in `categories: ["Chinese", "Snack"]`.
 
-If you want `in_favorites: true/false` to inform Step 4 selection (it's a useful soft preference), add one more tab to the first wave for the favorites URL. Skip this if user said "ignore my favorites this time".
+### Write the menu cache
 
-### 3e. Dedupe and cache
-
-Dedupe by `(brand, name)` key. The same dish often appears in multiple categories (e.g., a Chinese snack in both `Chinese` and `Snack`). Keep one merged entry, accumulate sources in `categories: ["Chinese", "Snack"]`.
-
-Write `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
 ```json
 {
   "cached_at": "ISO-8601",
   "date": "2026-05-21",
   "meal": "Lunch",
-  "sources": ["all"],         // or list of scraped categories
+  "sources": ["Chinese", "Japanese", "Drink", "Side", "favorites"],
   "items": [
     {
       "brand": "...",
@@ -65,22 +85,27 @@ Write `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
       "price": 14.95,
       "priceText": "$14.95",
       "rating": 4.5,
-      "in_favorites": true,    // or null if favorites not scraped
+      "in_favorites": true,
       "categories": ["Chinese", "Entrée"]
     }
   ]
 }
 ```
 
+TTL: 60 minutes. Auto-prune cache files older than 24 hours.
+
 ### Rate-limit recovery
 
-If a page returns 0 items, retry that single category once after 5s. If 3+ categories fail, ask:
-> WeBox seems rate-limiting. Want me to wait 60s and retry, or proceed with what I've scraped?
+If a page returns 0 items or hangs:
+1. Wait 5s, retry once.
+2. If still 0, skip that category.
+3. If 3+ skips in a row, ask the user:
+   > WeBox seems rate-limiting. Want me to wait 60s and retry, or proceed with what I have?
 
 ---
 
 ## Everything else: identical to webox-order
 
-Steps 0 (prereq), 1 (load state), 2 (sync history), 4 (build plan), 4b (validate budget), 5 (confirm), 6 (save to history), 7 (add to cart), 8 (checkout), 9 (repeat per slot), 10 (post-order feedback) — all identical. See `~/.claude/skills/webox-order/SKILL.md`.
+Steps 0 (prereq), 1 (load state), 2 (sync history), 4 (build plan), 4b (validate budget), 5 (confirm), 6 (save to history), 7 (URL-search-based add to cart), 8 (checkout), 9 (per-slot loop), 10 (post-order feedback) — all identical.
 
-The DOM Reference and Error Handling tables in `webox-order/SKILL.md` also apply unchanged.
+The DOM Reference (SITEMAP.md), Error Handling, and JS-First Principle from `webox-order/SKILL.md` apply unchanged.

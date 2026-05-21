@@ -9,9 +9,17 @@ The default ordering skill. Favorites-first with smart fallback when favorites c
 
 Data directory: `~/Documents/WeBox/` (visible in Finder, plain text).
 
-## JS-First Principle
+## JS-First Principle (strict)
 
-**Always prefer JavaScript over computer use.** JS is faster, more reliable, works in background tabs. Use computer use (screenshots, `find`, coordinate clicks) ONLY for visually complex modals with 5+ option groups that genuinely need model judgment. Every other interaction has a verified JS selector documented in this skill.
+**EVERY operation in this skill has a verified JavaScript or URL-navigation path.** Use computer use (screenshots, `find` tool, coordinate clicks) ONLY as the absolute last resort for visually complex modals with 5+ option groups that genuinely need model judgment.
+
+Hierarchy (use the first that applies):
+1. **URL navigation** — change the page state by navigating, not clicking (e.g., `?queryText=NAME` for item search)
+2. **JS selector + click/scroll** — for DOM interactions (cart, qty, checkout, modal)
+3. **`find` tool** — fallback when a JS selector is unknown
+4. **Computer use (screenshot + coordinate click)** — last resort only
+
+Slow image-and-coordinate operations are a bug to be fixed in this skill, not a workaround to use. If you find yourself reaching for a screenshot to click something, first check if a JS selector exists below.
 
 ## Defaults
 
@@ -205,77 +213,36 @@ Write `~/Documents/WeBox/menu-cache/YYYY-MM-DD-Meal.json`:
 ```
 Create the `menu-cache/` directory if it doesn't exist. Auto-prune cache files older than 24 hours when loading.
 
-### Cuisine-cuisine URL for categories
+### Category URLs — two flavors
 
-Use the ROOT URL with query params, not `/menu/section/X`:
-```
-https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=NAME&objName=NAME
-```
+WeBox categories fall into TWO groups with different URL patterns:
 
-URL-encoded category values (verified from the WeBox DOM):
+**Cuisines (ethnic):** `objType=CUISINE`, `objId` = human-readable name
+- Chinese, Japanese, Korean, Thai, Vietnamese, Indian, Mexican, Italian, French, Greek, Mediterranean, American, Burmese, Nepalese, Filipino
+- Example: `?objType=CUISINE&objId=Chinese&objName=Chinese`
 
-| Category | URL value |
-|----------|-----------|
-| Deals | `Deals` |
-| Chinese | `Chinese` |
-| Bowl | `Bowl` |
-| American | `American` |
-| Drink | `Drink` |
-| Side | `Side` |
-| Entrée | `Entr%C3%A9e` |
-| Noodles | `Noodles` |
-| Salad | `Salad` |
-| Japanese | `Japanese` |
-| Snack | `Snack` |
-| Korean | `Korean` |
-| Produce | `Produce` |
-| Thai | `Thai` |
-| Sandwich | `Sandwich` |
-| Italian | `Italian` |
-| Vietnamese | `Vietnamese` |
-| Mexican | `Mexican` |
-| Burger | `Burger` |
-| Mediterranean | `Mediterranean` |
-| Wrap | `Wrap` |
-| Indian | `Indian` |
-| Dairy & Eggs | `Dairy%20%26%20Eggs` |
-| Greek | `Greek` |
-| Dessert | `Dessert` |
-| French | `French` |
-| Taco | `Taco` |
-| Sushi | `Sushi` |
-| Burrito | `Burrito` |
-| Pizza | `Pizza` |
-| Filipino | `Filipino` |
-| Burmese | `Burmese` |
-| Nepalese | `Nepalese` |
+**Food types:** `objType=CATEGORY`, `objId` = NUMERIC database ID
+- Drink (id=38), Deals (id=504), and others — IDs must be discovered at runtime
+- Example: `?objType=CATEGORY&objId=38&objName=Drink`
 
-### Parallel Multi-Tab Execution
+**See `SITEMAP.md`** (sibling file in this skill directory) for the full reference and runtime-discovery snippet for unknown numeric IDs.
 
-Open up to 5 tabs concurrently. Background tabs DO execute JS scroll/scrape correctly for menu pages (verified). For >5 categories, batch in waves of 5.
+⚠️ **Anti-pattern:** `/menu/section/Chinese` (or any non-favorites category) silently falls back to favorites. Always use the root URL with query params.
 
-Pattern:
-```
-# Wave: create N tabs, navigate all (one browser_batch)
-browser_batch([
-  tabs_create_mcp({ url: <cat_url_1> }),
-  tabs_create_mcp({ url: <cat_url_2> }),
-  ... (up to 5)
-])
-# After capturing the returned tab IDs, run scrape JS in all tabs (second browser_batch)
-browser_batch([
-  javascript_tool({ tabId: <id_1>, text: <scrape_js> }),
-  javascript_tool({ tabId: <id_2>, text: <scrape_js> }),
-  ...
-])
-# Close tabs (third browser_batch)
-browser_batch([
-  tabs_close_mcp({ tabId: <id_1> }),
-  ...
-])
-```
+### Scraping Strategy: Sequential by Default
 
-`browser_batch` runs items sequentially in one round-trip, but each JS script is mostly `await sleep()` waiting for lazy-load → the scrapes overlap in time and total ~= max(per-tab time), not sum.
+**Default: sequential scraping, one tab.** Lazy-load is driven by Intersection Observer which can behave unpredictably in hidden background tabs — items may load partially. A single foreground tab with smart-scroll is the safest contract.
+
+Per-scrape time is ~3-5s (smart scroll with 350ms wait, terminates at 2 stable counts). For the smart-default flow that's at most ~7 scrapes (favorites + 6 augment categories) = ~30s. Acceptable.
+
+**Parallel multi-tab is NOT recommended** for production scrapes:
+- Background tabs may return INCOMPLETE results (silent partial loads)
+- The `browser_batch` round-trip "looks" parallel but each tab still runs lazy-load sequentially-ish under throttling
+- The wall-time gain is modest and the correctness risk is real
+
+If parallelism is genuinely needed (e.g., user wants the full menu fast), consider:
+- Opening N tabs sequentially with full smart-scroll in each foreground turn (slow but correct)
+- Or accept partial results and document the limitation
 
 ### Rate-limit recovery
 
@@ -414,106 +381,143 @@ Status icons:
 
 ---
 
-## Step 7: Add Items to Cart (one item at a time)
+## Step 7: Add Items to Cart (URL search + per-item)
 
-Navigate to the date+meal URL before adding. Each date's cart is independent — switching the date URL resets cart context.
+**The fast, reliable approach uses URL-based search per item — NOT navigating to a slot menu and DOM-scrolling to find each item.**
 
-### Critical: handle items ONE AT A TIME
+### Per-item add flow (sequential, one item at a time)
 
-The biggest pitfall: chaining multiple add-to-cart clicks in one JS scope breaks when an item opens a modal mid-loop (subsequent clicks hit modal background, not the next item). **Each item must be its own discrete add operation** with explicit modal handling between.
+For each item in the plan:
 
-### Per-item add helper
+1. **Navigate via URL search** (instead of menu navigation + DOM-find):
+   ```
+   https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&queryText=<urlencoded-item-name>
+   ```
+   This loads the menu pre-filtered to items matching the search. **Verified: 50-result limit, first result is the exact match when searching for a specific dish name.**
+
+2. **Click the first result** via JS:
+   ```javascript
+   (async () => {
+     await new Promise(r => setTimeout(r, 2500));  // wait for search results to render
+     const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
+     const items = [...document.querySelectorAll(SELECTORS)];
+     if (!items.length) return { status: 'no_results' };
+     // First result; verify it matches the intended item name to guard against fuzzy-match misses
+     const target = items[0];
+     const name = target.querySelector('.product-menu-title')?.innerText?.trim();
+     // SAFETY: if the first result name doesn't contain key tokens from the intended name, abort
+     const intended = 'INTENDED_ITEM_NAME';  // pass in
+     const tokens = intended.toLowerCase().split(/\s+/).filter(t => t.length > 3);
+     const matchesEnough = tokens.filter(t => name?.toLowerCase().includes(t)).length >= Math.max(1, Math.floor(tokens.length / 2));
+     if (!matchesEnough) return { status: 'mismatch', firstResult: name, intended };
+     // Click add button
+     const btn = target.querySelector('.btn.plus-add') || target.querySelector('.product-add-wrapper');
+     if (!btn) return { status: 'no_button', name };
+     btn.click();
+     await new Promise(r => setTimeout(r, 1200));
+     const modal = !!document.querySelector('[class*="product-detail-header"]');
+     return { status: modal ? 'modal_opened' : 'added_direct', name };
+   })()
+   ```
+
+3. **If `modal_opened`**: handle the modal (see "Modal handling" below). The script returns the modal state — do NOT chain more clicks in the same JS scope; that's the bug that caused unintended items in earlier tests.
+
+4. **Then proceed to next item** with a fresh navigation.
+
+### Why URL search beats DOM-scroll-find
+
+- **Reliable:** search is server-side, results are deterministic
+- **Fast:** ~2.5s per item (search load + render) vs ~5-10s scraping the slot menu
+- **No partial matching ambiguity:** the search engine picks the best match; we verify by token-overlap on the result name
+- **No state pollution:** each item is an independent navigation; cart accumulates correctly
+
+### Modal handling (pure JS)
+
+If add returns `modal_opened`:
 
 ```javascript
 (async () => {
-  const targetName = 'ITEM_NAME_HERE';   // partial match, case-insensitive
-  const qty = 1;
-  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
-  const items = [...document.querySelectorAll(SELECTORS)];
-  const match = items.find(item => {
-    const title = item.querySelector('.product-menu-title');
-    return title && title.innerText.toLowerCase().includes(targetName.toLowerCase());
-  });
-  if (!match) return { status: 'item_not_found' };
-  // Two button types: .btn.plus-add (most items) or .product-add-wrapper (items with required options)
-  const btn = match.querySelector('.btn.plus-add') || match.querySelector('.product-add-wrapper');
-  if (!btn) return { status: 'no_button' };
-  btn.click();
-  await new Promise(r => setTimeout(r, 1000));
-  const modal = document.querySelector('[class*="product-detail-header"]');
-  if (modal) {
-    return { status: 'modal_opened', qty_remaining: qty };
-  }
-  // No modal — increment further if qty > 1
-  for (let i = 1; i < qty; i++) {
-    btn.click();
-    await new Promise(r => setTimeout(r, 400));
-  }
-  return { status: `added_direct_x${qty}` };
-})()
-```
-
-If result is `modal_opened`:
-
-```javascript
-(async () => {
-  // Check items-with-options.md cache for this item's preferred option (read separately first)
-  // Click "Add to Cart" inside modal
+  // 1. (Optional) Check ~/Documents/WeBox/items-with-options.md for cached options.
+  //    If cached, find and click the matching option radio first:
+  //    [...document.querySelectorAll('.option-item, [class*="option"]')].find(el => el.innerText.includes('PREFERRED_OPTION'))?.click();
+  // 2. Click Add to Cart inside modal
   document.querySelector('st-button.add-button')?.click();
   await new Promise(r => setTimeout(r, 1000));
-  // Close modal (does NOT auto-close)
-  document.querySelector('.anticon.anticon-close, [class*="ant-modal-close"]')?.click();
-  await new Promise(r => setTimeout(r, 600));
-  return { modalGone: !document.querySelector('[class*="product-detail-header"]') };
+  // 3. Close modal (it does NOT auto-close after Add)
+  document.querySelector('.anticon.anticon-close')?.click();
+  await new Promise(r => setTimeout(r, 500));
+  return { added: true, modalGone: !document.querySelector('[class*="product-detail-header"]') };
 })()
 ```
 
-If qty > 1 and the item had a modal: after adding the first unit, navigate to `/checkout` and use the cart's qty stepper:
+After encountering a new item with options, append to `~/Documents/WeBox/items-with-options.md`:
+```
+- [Brand] [Item Name] — options: "Choose Rice" (single, default: White Rice) — chosen: Purple Rice — date: YYYY-MM-DD
+```
 
+### Quantity > 1
+
+Two paths depending on whether the item had a modal:
+
+**Item without modal:** the search-and-click script above can loop the click N times (same scope safely — no modal opens). Modify it to take `qty` and loop:
+```javascript
+for (let i = 0; i < qty; i++) {
+  btn.click();
+  await new Promise(r => setTimeout(r, 400));
+}
+```
+
+**Item with modal:** add once via modal flow, then navigate to `/checkout` and use cart qty stepper:
 ```javascript
 (async () => {
-  const targetName = 'ITEM_NAME_HERE';
+  const targetName = 'ITEM_NAME';
   const targetQty = 3;
   const steppers = [...document.querySelectorAll('.input-number-wrapper.isCart')];
   const stepper = steppers.find(s => {
     const card = s.closest('[class*="cart-item"], [class*="cart-product"]') || s.parentElement?.parentElement;
     return card?.innerText.toLowerCase().includes(targetName.toLowerCase());
   });
-  if (!stepper) return 'item not in cart';
+  if (!stepper) return 'not_in_cart';
   const currentQty = parseInt(stepper.querySelector('input')?.value || '0', 10);
   const diff = targetQty - currentQty;
   for (let i = 0; i < Math.abs(diff); i++) {
-    const btn = stepper.querySelector(diff > 0 ? '.btn.plus' : '.btn.minus:not(.unable)');
-    btn?.click();
-    await new Promise(r => setTimeout(r, 350));
+    stepper.querySelector(diff > 0 ? '.btn.plus' : '.btn.minus:not(.unable)')?.click();
+    await new Promise(r => setTimeout(r, 300));
   }
-  return `qty set to ${stepper.querySelector('input')?.value}`;
+  return `qty=${stepper.querySelector('input')?.value}`;
 })()
 ```
 
-### items-with-options cache
+### Removing an item (decrement qty to 0)
 
-Before clicking the modal's "Add to Cart", check `~/Documents/WeBox/items-with-options.md` to see if this item has a known preferred option. Format:
-```markdown
-- [Brand] [Item Name] — options: "Choose Rice" (single, default: White Rice) — chosen: Purple Rice — date: YYYY-MM-DD
+Decrementing to 0 opens a confirm dialog. Pure JS handler:
+```javascript
+(async () => {
+  // ...find stepper as above...
+  // Decrement until qty=1
+  while (parseInt(stepper.querySelector('input')?.value || '0', 10) > 1) {
+    stepper.querySelector('.btn.minus')?.click();
+    await new Promise(r => setTimeout(r, 250));
+  }
+  // One more decrement triggers confirm
+  stepper.querySelector('.btn.minus')?.click();
+  await new Promise(r => setTimeout(r, 700));
+  [...document.querySelectorAll('button')].find(b => /^Remove$/i.test((b.innerText || '').trim()))?.click();
+  await new Promise(r => setTimeout(r, 700));
+  return 'removed';
+})()
 ```
 
-If cached, find and click the matching option in the modal before clicking Add to Cart. Otherwise, accept the default pre-selected option.
+### Search returns no results / wrong item
 
-After a new options-modal encounter, append to the cache. Create file if missing.
+If the search-and-click script returns:
+- `no_results` → try a shorter search query (drop modifiers); if still nothing, the item may be sold out on this date. Substitute from the cached menu, note in `order-history.md`.
+- `mismatch` → first result doesn't match. Try a more specific query (include brand name) or substitute.
+- `no_button` → unlikely with URL search; if it happens, retry once or substitute.
 
 ### Complex options (5+ option groups)
 
-This is the only case where computer use is justified. Take a screenshot, use judgment to select reasonable options, then run the modal-add JS above.
-
-### Item not found / sold out at cart time
-
-1. Re-scrape the slot's menu (force cache miss)
-2. Pick a substitute from the cached menu items meeting the same criteria
-3. Note the substitution inline in `order-history.md`:
-   ```
-   ### Mon 05/25 Lunch ✅ #XXX — was: Mongolian Beef (sold out → Sliced Spicy Beef)
-   ```
+Last-resort fallback to computer use. Take a screenshot, use judgment to pick options, then click the modal's Add to Cart via JS as above. Document the chosen options in `items-with-options.md` so future runs use JS.
 
 ---
 
