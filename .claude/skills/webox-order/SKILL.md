@@ -65,13 +65,12 @@ Schema per file:
 {
   "week": "2026-W21",
   "week_starts": "2026-05-18",
-  "synced_at": "2026-05-21T14:30:00",
+  "synced_at": "2026-05-21T14:30:00Z",
   "orders": [
     {
       "date": "2026-05-18", "day": "Mon", "meal": "Lunch",
-      "orderId": "No.3258400", "status": "active", "total": 28.30,
       "items": [
-        { "brand": "Xiangchuan Kitchen", "name": "Mongolian Beef Bento", "qty": 1, "price": 17.45 }
+        { "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "price": 17.45 }
       ]
     }
   ]
@@ -79,6 +78,8 @@ Schema per file:
 ```
 
 **Cancelled/refunded orders are filtered at sync time** — they never appear in these files. Anything present = real active or planned order, blocks its slot.
+
+**Planned orders** (written by Step 6 before checkout, not yet placed) — when added to a week file, the agent sets a `planned: true` field on that entry. After checkout the field is removed. This lets downstream skills distinguish "I told the user we'd order this" from "this is in WeBox".
 
 If the latest week file's `synced_at` is more than 1 day old → re-sync in Step 2.
 
@@ -101,31 +102,62 @@ Navigate to `https://www.webox.com/order/list/normal` and run the scraper below.
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;
   }
-  const orders = [...document.querySelectorAll('.order-item')].map(o => {
-    const orderId = o.querySelector('.order-id')?.innerText?.trim();           // "No.3258614"
-    const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';  // active orders may show "Paid"
+  // Helpers — ISO date + ISO week
+  const now = new Date();
+  const toFullDate = (md) => {
+    const m = md.match(/(\d{2})\/(\d{2})/); if (!m) return null;
+    let d = new Date(now.getFullYear(), +m[1]-1, +m[2]);
+    if (d - now > 30*86400000) d = new Date(now.getFullYear()-1, +m[1]-1, +m[2]);
+    return d.toISOString().slice(0, 10);
+  };
+  const isoWeek = (iso) => {
+    const d = new Date(iso + 'T00:00:00'); d.setHours(0,0,0,0);
+    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+    const ys = new Date(d.getFullYear(), 0, 1);
+    return `${d.getFullYear()}-W${String(Math.ceil((((d - ys)/86400000)+1)/7)).padStart(2,'0')}`;
+  };
+  const weekMonday = (wk) => {
+    const [y, w] = wk.split('-W').map(Number);
+    const jan4 = new Date(y, 0, 4); const dow = jan4.getDay() || 7;
+    const mon = new Date(jan4); mon.setDate(jan4.getDate() - dow + 1 + (w-1)*7);
+    return mon.toISOString().slice(0, 10);
+  };
+  // Scrape + filter to active orders only, group by ISO week
+  const synced = now.toISOString();
+  const weeks = {};
+  for (const o of document.querySelectorAll('.order-item')) {
+    const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
+    if (/refund|cancel/i.test(orderStatus)) continue;
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
     const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
-    const meal = mealLine?.match(/^(Lunch|Dinner|HappyHour)/)?.[1];
-    const totalMatch = o.innerText.match(/Total[:\s]*\$?([\d.]+)/i);
-    const total = totalMatch ? parseFloat(totalMatch[1]) : null;
-    // Structured per-item: .product-item has name + description + price as separate lines
+    if (!dateLine || !mealLine) continue;
+    const meal = mealLine.match(/^(Lunch|Dinner|HappyHour)/)[1];
     const items = [...o.querySelectorAll('.product-item')].map(p => {
       const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
       const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-      const descLine = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
-      const priceLine = txt.find(l => /^\$[\d.]+/.test(l));
-      const price = priceLine ? parseFloat(priceLine.replace('$', '')) : null;
-      const brand = descLine?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim();
-      return { name, brand, price };
+      const desc = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
+      const pl = txt.find(l => /^\$[\d.]+/.test(l));
+      return { name, brand: desc?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim(), price: pl ? parseFloat(pl.slice(1)) : null };
     }).filter(x => x.name);
-    const isActive = !/refund|cancel/i.test(orderStatus);
-    return { date: dateLine, meal, orderId, status: orderStatus, total, isActive, items };
-  }).filter(o => o.date && o.meal && o.isActive && o.items.length);
-  return JSON.stringify(orders);
+    if (!items.length) continue;
+    const fullDate = toFullDate(dateLine);
+    if (!fullDate) continue;
+    const day = dateLine.split(/\s+/)[0];
+    const wk = isoWeek(fullDate);
+    if (!weeks[wk]) weeks[wk] = { week: wk, week_starts: weekMonday(wk), synced_at: synced, orders: [] };
+    // Skip duplicates within this scrape (same date+meal+first item name)
+    const key = `${fullDate}|${meal}|${items[0].name}`;
+    if (weeks[wk].orders.some(x => `${x.date}|${x.meal}|${x.items[0].name}` === key)) continue;
+    weeks[wk].orders.push({ date: fullDate, day, meal, items });
+  }
+  return JSON.stringify(weeks);
 })()
 ```
+
+**Output format is directly writable.** The result is an object keyed by ISO week — `{"2026-W21": {week, week_starts, synced_at, orders}, "2026-W22": {...}}`. The agent iterates the keys and writes each week as `~/Documents/WeBox/orders/<key>.json` with the value as the file content. No post-processing needed.
+
+Per-order schema is intentionally minimal — `{date, day, meal, items: [{name, brand, price}]}`. Dropped: `orderId`, `status`, `total`, `isActive`. We only return active orders (cancelled/refunded filtered at scrape time), so `status` and `isActive` are constants. `total` on a subsidized account is always $0. `orderId` isn't needed for variety tracking or slot occupancy; if the agent needs to dedup against an existing local file, use `date+meal+first item name` as the key.
 
 For each scraped order:
 1. Convert `"Mon 05/18"` to a full ISO date using the current year (or previous year if the resulting date is in the future).

@@ -33,34 +33,59 @@ Navigate to `https://www.webox.com/order/list/normal`. Scroll smart-style (stops
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;
   }
-  const orders = [...document.querySelectorAll('.order-item')].map(o => {
-    const orderId = o.querySelector('.order-id')?.innerText?.trim();
+  const now = new Date();
+  const toFullDate = (md) => {
+    const m = md.match(/(\d{2})\/(\d{2})/); if (!m) return null;
+    let d = new Date(now.getFullYear(), +m[1]-1, +m[2]);
+    if (d - now > 30*86400000) d = new Date(now.getFullYear()-1, +m[1]-1, +m[2]);
+    return d.toISOString().slice(0, 10);
+  };
+  const isoWeek = (iso) => {
+    const d = new Date(iso + 'T00:00:00'); d.setHours(0,0,0,0);
+    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+    const ys = new Date(d.getFullYear(), 0, 1);
+    return `${d.getFullYear()}-W${String(Math.ceil((((d - ys)/86400000)+1)/7)).padStart(2,'0')}`;
+  };
+  const weekMonday = (wk) => {
+    const [y, w] = wk.split('-W').map(Number);
+    const jan4 = new Date(y, 0, 4); const dow = jan4.getDay() || 7;
+    const mon = new Date(jan4); mon.setDate(jan4.getDate() - dow + 1 + (w-1)*7);
+    return mon.toISOString().slice(0, 10);
+  };
+  const synced = now.toISOString();
+  const weeks = {};
+  for (const o of document.querySelectorAll('.order-item')) {
     const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
+    if (/refund|cancel/i.test(orderStatus)) continue;
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
     const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
-    const meal = mealLine?.match(/^(Lunch|Dinner|HappyHour)/)?.[1];
-    const totalMatch = o.innerText.match(/Total[:\s]*\$?([\d.]+)/i);
-    const total = totalMatch ? parseFloat(totalMatch[1]) : null;
-    // Structured per-item via .product-item — yields compact {name, brand, price}.
-    // Skip the long description text entirely to keep output small.
+    if (!dateLine || !mealLine) continue;
+    const meal = mealLine.match(/^(Lunch|Dinner|HappyHour)/)[1];
     const items = [...o.querySelectorAll('.product-item')].map(p => {
       const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
       const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-      const descLine = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
-      const priceLine = txt.find(l => /^\$[\d.]+/.test(l));
-      const price = priceLine ? parseFloat(priceLine.replace('$', '')) : null;
-      const brand = descLine?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim();
-      return { name, brand, price };
+      const desc = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
+      const pl = txt.find(l => /^\$[\d.]+/.test(l));
+      return { name, brand: desc?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim(), price: pl ? parseFloat(pl.slice(1)) : null };
     }).filter(x => x.name);
-    const isActive = !/refund|cancel/i.test(orderStatus);
-    return { date: dateLine, meal, orderId, status: orderStatus, total, isActive, items };
-  }).filter(o => o.date && o.meal && o.isActive && o.items.length);
-  return JSON.stringify(orders);
+    if (!items.length) continue;
+    const fullDate = toFullDate(dateLine);
+    if (!fullDate) continue;
+    const day = dateLine.split(/\s+/)[0];
+    const wk = isoWeek(fullDate);
+    if (!weeks[wk]) weeks[wk] = { week: wk, week_starts: weekMonday(wk), synced_at: synced, orders: [] };
+    const key = `${fullDate}|${meal}|${items[0].name}`;
+    if (weeks[wk].orders.some(x => `${x.date}|${x.meal}|${x.items[0].name}` === key)) continue;
+    weeks[wk].orders.push({ date: fullDate, day, meal, items });
+  }
+  return JSON.stringify(weeks);
 })()
 ```
 
-**Output is compact by design.** Each order returns `{date, meal, orderId, status, total, items: [{name, brand, price}]}` — no item descriptions, no allergens text, no marketing copy. A 41-order history fits comfortably in one tool result (under 5KB typically). This avoids display truncation and saves context tokens.
+**Output is directly writable.** Result is an object keyed by ISO week: `{"2026-W21": {week, week_starts, synced_at, orders: [...]}, ...}`. The agent just iterates keys and writes each value as `~/Documents/WeBox/orders/<key>.json`. No post-processing.
+
+Per-order schema is minimal: `{date, day, meal, items: [{name, brand, price}]}`. Dropped: `orderId`, `status`, `total`, `isActive`. We only return active orders so status/isActive are constants; `total` is always $0 for subsidized accounts; `orderId` isn't needed downstream (date+meal is the natural slot key).
 
 ## Step 2: Merge into per-week JSON files
 
@@ -72,31 +97,32 @@ For each scraped order:
 5. Preserve any local `status: "planned"` entries until they appear as `"active"` in the scrape (then update inline).
 6. Set `synced_at` on every touched week file.
 
-### Per-week file schema
+### Per-week file schema (matches scraper output directly)
 
 ```json
 {
   "week": "2026-W21",
   "week_starts": "2026-05-18",
-  "synced_at": "2026-05-21T14:30:00",
+  "synced_at": "2026-05-21T14:30:00Z",
   "orders": [
     {
       "date": "2026-05-18",
       "day": "Mon",
       "meal": "Lunch",
-      "orderId": "No.3258400",
-      "status": "active",
-      "total": 28.30,
       "items": [
-        { "brand": "Xiangchuan Kitchen", "name": "Mongolian Beef Bento", "qty": 1, "price": 17.45 },
-        { "brand": "Northwest China Cuisine", "name": "Tea Egg", "qty": 2, "price": 2.45 }
+        { "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "price": 17.45 },
+        { "name": "Tea Egg", "brand": "Northwest China Cuisine", "price": 2.45 }
       ]
     }
   ]
 }
 ```
 
+The agent doesn't need to transform anything — the scraper returns this exact shape, keyed by week. Just write `Object.entries(result).forEach(([wk, content]) => writeFile(\`~/Documents/WeBox/orders/${wk}.json\`, JSON.stringify(content, null, 2)))`.
+
 **Cancelled/refunded orders are filtered out at scrape time and never written.** The slot stays openable. If the user wants to audit cancelled history, point them at `/order/list/normal`.
+
+If a local week file has `planned: true` entries (from webox-order Step 6), preserve them when merging — only overwrite entries whose date+meal pair matches a newly-scraped active order.
 
 ## Step 3: Display the Active Window
 

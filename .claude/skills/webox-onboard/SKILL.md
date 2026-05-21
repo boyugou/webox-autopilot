@@ -115,33 +115,57 @@ The order list page is heavier than menu pages. **Keep scrolls fast (300ms) and 
     if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
     lastCount = cnt;
   }
-  const orders = [...document.querySelectorAll('.order-item')].map(o => {
-    const orderId = o.querySelector('.order-id')?.innerText?.trim();           // "No.3258614"
-    const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';  // active orders may show "Paid"
+  const now = new Date();
+  const toFullDate = (md) => {
+    const m = md.match(/(\d{2})\/(\d{2})/); if (!m) return null;
+    let d = new Date(now.getFullYear(), +m[1]-1, +m[2]);
+    if (d - now > 30*86400000) d = new Date(now.getFullYear()-1, +m[1]-1, +m[2]);
+    return d.toISOString().slice(0, 10);
+  };
+  const isoWeek = (iso) => {
+    const d = new Date(iso + 'T00:00:00'); d.setHours(0,0,0,0);
+    d.setDate(d.getDate() + 4 - (d.getDay() || 7));
+    const ys = new Date(d.getFullYear(), 0, 1);
+    return `${d.getFullYear()}-W${String(Math.ceil((((d - ys)/86400000)+1)/7)).padStart(2,'0')}`;
+  };
+  const weekMonday = (wk) => {
+    const [y, w] = wk.split('-W').map(Number);
+    const jan4 = new Date(y, 0, 4); const dow = jan4.getDay() || 7;
+    const mon = new Date(jan4); mon.setDate(jan4.getDate() - dow + 1 + (w-1)*7);
+    return mon.toISOString().slice(0, 10);
+  };
+  const synced = now.toISOString();
+  const weeks = {};
+  for (const o of document.querySelectorAll('.order-item')) {
+    const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
+    if (/refund|cancel/i.test(orderStatus)) continue;
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
     const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
-    const meal = mealLine?.match(/^(Lunch|Dinner|HappyHour)/)?.[1];
-    const totalMatch = o.innerText.match(/Total[:\s]*\$?([\d.]+)/i);
-    const total = totalMatch ? parseFloat(totalMatch[1]) : null;
-    // Structured per-item: .product-item has name + description + price as separate lines
+    if (!dateLine || !mealLine) continue;
+    const meal = mealLine.match(/^(Lunch|Dinner|HappyHour)/)[1];
     const items = [...o.querySelectorAll('.product-item')].map(p => {
       const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
       const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-      const descLine = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
-      const priceLine = txt.find(l => /^\$[\d.]+/.test(l));
-      const price = priceLine ? parseFloat(priceLine.replace('$', '')) : null;
-      const brand = descLine?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim();
-      return { name, brand, price };
+      const desc = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
+      const pl = txt.find(l => /^\$[\d.]+/.test(l));
+      return { name, brand: desc?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim(), price: pl ? parseFloat(pl.slice(1)) : null };
     }).filter(x => x.name);
-    const isActive = !/refund|cancel/i.test(orderStatus);
-    return { date: dateLine, meal, orderId, status: orderStatus, total, isActive, items };
-  }).filter(o => o.date && o.meal && o.isActive && o.items.length);
-  return JSON.stringify(orders);
+    if (!items.length) continue;
+    const fullDate = toFullDate(dateLine);
+    if (!fullDate) continue;
+    const day = dateLine.split(/\s+/)[0];
+    const wk = isoWeek(fullDate);
+    if (!weeks[wk]) weeks[wk] = { week: wk, week_starts: weekMonday(wk), synced_at: synced, orders: [] };
+    const key = `${fullDate}|${meal}|${items[0].name}`;
+    if (weeks[wk].orders.some(x => `${x.date}|${x.meal}|${x.items[0].name}` === key)) continue;
+    weeks[wk].orders.push({ date: fullDate, day, meal, items });
+  }
+  return JSON.stringify(weeks);
 })()
 ```
 
-Filter `o.isActive` only (cancelled/refunded are never persisted). Convert each `"Mon 05/18"` → full ISO date → ISO week → merge into `~/Documents/WeBox/orders/<YYYY-Www>.json`. See Step 5b for the schema and merge logic.
+**Output is directly writable** — keyed by ISO week. For each key, write `~/Documents/WeBox/orders/<key>.json` with the value as the file content. No post-processing. If empty (new user), create `~/Documents/WeBox/orders/.empty` marker instead.
 
 Empty result (new user, no orders) → create `~/Documents/WeBox/orders/.empty` marker so the "already onboarded" check in Step 2 succeeds on next run.
 
@@ -242,29 +266,26 @@ For each scraped active order:
 2. Compute the ISO week → `YYYY-Www` (e.g. `2026-W21` for Mon 2026-05-18).
 3. Read or create `~/Documents/WeBox/orders/<YYYY-Www>.json` and append/merge.
 
-Schema:
+Schema (matches what the scraper returns directly — just iterate the returned object's keys and write each value as the file content):
 ```json
 {
   "week": "2026-W21",
   "week_starts": "2026-05-18",
-  "synced_at": "2026-05-21T14:30:00",
+  "synced_at": "2026-05-21T14:30:00Z",
   "orders": [
     {
       "date": "2026-05-18",
       "day": "Mon",
       "meal": "Lunch",
-      "orderId": "No.3258400",
-      "status": "active",
-      "total": 28.30,
       "items": [
-        { "brand": "Xiangchuan Kitchen", "name": "Mongolian Beef Bento", "qty": 1, "price": 17.45 }
+        { "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "price": 17.45 }
       ]
     }
   ]
 }
 ```
 
-Dedupe by `orderId`. Set `synced_at` on every touched week file.
+The scraper handles dedup internally (date+meal+first item name). If a week file already exists locally with `planned: true` entries from `webox-order`, preserve them — only overwrite entries whose `date+meal` match.
 
 If scrape returned 0 orders (new user), create `~/Documents/WeBox/orders/.empty` as a marker so future runs detect "onboarded" correctly.
 
