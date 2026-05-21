@@ -75,7 +75,7 @@ One call ≈ 1 second, full menu. No scrolling, no virtualization.
 
 **Bulk operations** (e.g., "hide all sugary drinks"):
 ```js
-const sugary = items.filter(i => i.category === 'Drink' && /soda|sweet|cola|sugar/i.test(i.name));
+const sugary = items.filter(i => i.category === 'Beverage' && /soda|sweet|cola|sugar/i.test(i.name));
 for (const it of sugary) {
   await fetch('/api/userHide/addHide?client=web', {
     method: 'POST', credentials: 'include',
