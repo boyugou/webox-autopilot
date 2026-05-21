@@ -55,17 +55,27 @@ allow_repeat_patterns:    # case-insensitive substring match on item name
 ## Category Scraping (saves time)
 
 ```yaml
-# Controls which menu categories Claude scrapes when favorites aren't enough.
-# Set mode to "all" (scrape everything when needed), "whitelist" (only these),
-# or "blacklist" (everything except these).
-category_mode: blacklist   # all | whitelist | blacklist
+# Controls which menu categories Claude scrapes beyond favorites.
+#
+# Modes:
+#   curated   (default) — favorites + preferred_cuisines + filler categories
+#                          (Drink, Side, Snack, Dairy & Eggs, Produce). ~7
+#                          scrapes, ~35s. Best default for normal ordering.
+#   whitelist — favorites + only the categories listed in `category_list`.
+#   blacklist — favorites + every category EXCEPT those in `category_list`.
+#               ~25 scrapes, slow.
+#   all       — favorites + every category (33 total). ~150s. For "show me
+#                everything".
+#
+# `category_list` only matters when mode is `whitelist` or `blacklist`.
+# The default below is a minimal sensible exclusion for blacklist mode —
+# Dessert and Snack are categories most users don't want as part of a meal.
+# Customize as you like. Set to `- none` (or just an empty list) for no
+# exclusions.
+category_mode: curated   # curated | whitelist | blacklist | all
 category_list:
   - Dessert
-  - Burger
-  - Pizza
-  - Burrito
-  - Taco
-  - Sandwich
+  - Snack
   # Available: Deals, Chinese, Bowl, American, Drink, Side, Entrée, Noodles,
   # Salad, Japanese, Snack, Korean, Produce, Thai, Sandwich, Italian,
   # Vietnamese, Mexican, Burger, Mediterranean, Wrap, Indian, Dairy & Eggs,

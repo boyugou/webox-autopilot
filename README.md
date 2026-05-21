@@ -145,7 +145,7 @@ All settings live in `~/Documents/WeBox/preferences.md` (visible in Finder — e
 | Setting | Type | Default | Description |
 |---|---|---|---|
 | `category_mode` | string | `curated` | `curated`: favorites + preferred_cuisines + fillers (~7 scrapes, ~35s). `whitelist`: only `category_list`. `blacklist`: all except `category_list`. `all`: every category (~150s). |
-| `category_list` | list | `[Dessert, Burger, Pizza]` | Categories to include/exclude based on `category_mode` |
+| `category_list` | list | `[Dessert, Snack]` | Used only by `whitelist`/`blacklist` modes. Default is a minimal exclusion (just Dessert and Snack — categories most users don't want as a meal). Customize freely; set to empty list for no exclusions. |
 
 ### Dietary
 
