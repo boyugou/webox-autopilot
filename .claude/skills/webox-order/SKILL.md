@@ -157,6 +157,8 @@ Navigate to `https://www.webox.com/order/list/normal` and run the scraper below.
 
 **Output format is directly writable.** The result is an object keyed by ISO week — `{"2026-W21": {week, week_starts, synced_at, orders}, "2026-W22": {...}}`. The agent iterates the keys and writes each week as `~/Documents/WeBox/orders/<key>.json` with the value as the file content. No post-processing needed.
 
+**Trust the tool result.** Claude Code's terminal may visually truncate large tool outputs at ~1 KB with `[TRUNCATED]` — that's display-only; the agent's tool result contains the full string. Pass the full JSON straight to `Write` / `JSON.parse`. Don't waste round-trips on `window.__x.slice(...)` chunked re-reads.
+
 Per-order schema is intentionally minimal — `{date, day, meal, items: [{name, brand, price}]}`. Dropped: `orderId`, `status`, `total`, `isActive`. We only return active orders (cancelled/refunded filtered at scrape time), so `status` and `isActive` are constants. `total` on a subsidized account is always $0. `orderId` isn't needed for variety tracking or slot occupancy; if the agent needs to dedup against an existing local file, use `date+meal+first item name` as the key.
 
 For each scraped order:

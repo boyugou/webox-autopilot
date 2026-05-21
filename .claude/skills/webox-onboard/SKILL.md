@@ -24,18 +24,28 @@ If you've already run onboarding, it offers to update preferences, re-sync data,
 
 ---
 
-## Step 1: Check Prerequisites (single batch, fast)
+## Step 1: Open a Fresh Tab + Verify Login
 
-Run all of these in ONE `browser_batch` call to minimize round-trips and permission prompts:
+### 1a. Get a clean tab (don't reuse old session state)
+
+**Always start onboarding with a brand-new tab.** Tabs left over from prior sessions can be on stale URLs or have intermediate state.
 
 ```
-browser_batch([
-  tabs_context_mcp,                                       # verify Chrome connected
-  navigate(main_tab, "https://www.webox.com"),           # also serves as login check
-])
+tabs_context_mcp({ createIfEmpty: true })
 ```
 
-Then in JavaScript on the main tab, check for login state:
+- If no MCP group exists yet → this creates a new window with a fresh empty tab. Use that tab.
+- If an MCP group already exists → call `tabs_create_mcp()` explicitly to create a new tab. Use the new tab's `tabId` for the rest of onboarding; ignore the older tabs.
+
+**Capture the `tabId` of the new tab and pass it explicitly to every subsequent `navigate` / `javascript_tool` call.** Don't rely on "the current tab" — always be explicit about which tab.
+
+### 1b. Navigate to webox.com and probe login
+
+```
+navigate(<tabId>, "https://www.webox.com")
+```
+
+Wait ~2s for the page to load, then run:
 ```javascript
 ({ loggedIn: !!document.querySelector('[class*="user-avatar"], [class*="user-name"], [class*="header-avatar"], a.cart.fr') })
 ```
@@ -44,12 +54,12 @@ Then in JavaScript on the main tab, check for login state:
 If `loggedIn: false`:
 > You're not logged into WeBox. Please log in at webox.com in Chrome and try again.
 
-Then create the data directory:
+### 1c. Data directory
 ```bash
 mkdir -p ~/Documents/WeBox
 ```
 
-**Permission note:** Claude in Chrome may ask the user for permission to navigate to webox.com on the FIRST navigation. This is normal and only happens once per origin. Don't navigate to webox.com multiple times — one nav is enough.
+**Permission note:** Claude in Chrome may prompt the user to approve the FIRST navigation to webox.com per origin. Normal, happens once. Don't navigate to webox.com multiple times — one nav is enough.
 
 ---
 
@@ -166,6 +176,19 @@ The order list page is heavier than menu pages. **Keep scrolls fast (300ms) and 
 ```
 
 **Output is directly writable** — keyed by ISO week. For each key, write `~/Documents/WeBox/orders/<key>.json` with the value as the file content. No post-processing. If empty (new user), create `~/Documents/WeBox/orders/.empty` marker instead.
+
+### Output handling — trust the tool result, don't re-chunk
+
+The tool result string can be 5–20 KB for a typical user. Claude Code's terminal display may visually truncate it at ~1 KB with `[TRUNCATED]`, but **the truncation is purely display — the agent's tool result contains the full string**. Pass the full JSON string straight to `Write` / `JSON.parse` without trying to "chunk-read" via further `slice()` calls (which would be wasted round-trips). If you genuinely need to verify size, do `JSON.parse(result).hasOwnProperty('errorKey')` checks rather than reading the literal string.
+
+### Recovery if the order-list page hangs
+
+If the JS times out (CDP returns no result after ~45s), the order list page may genuinely be unresponsive (heavy lazy-load, network slow). Don't retry the scrape; instead:
+1. Create `~/Documents/WeBox/orders/.empty` as the "onboarded" marker.
+2. Move on to favorites scrape (Step 4b).
+3. Tell the user: "Order list took too long to load — I'll skip it for first-run. Run `/webox-sync` later when the page is responsive to pull your history."
+
+Don't loop-retry — onboarding shouldn't block on a flaky page.
 
 Empty result (new user, no orders) → create `~/Documents/WeBox/orders/.empty` marker so the "already onboarded" check in Step 2 succeeds on next run.
 

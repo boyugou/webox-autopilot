@@ -89,6 +89,8 @@ Navigate to `https://www.webox.com/order/list/normal` and run:
 
 **Output is directly writable** — keyed by ISO week: `{"2026-W21": {week, week_starts, synced_at, orders: [...]}, ...}`. For each key, write `~/Documents/WeBox/orders/<key>.json` with the value as the file content. Preserve any local entries with `planned: true` that don't appear in the scrape (they're pending checkout from `webox-order`).
 
+**Trust the tool result; don't chunk-read.** Claude Code's terminal may visually truncate large tool outputs at ~1 KB with `[TRUNCATED]` — that's display-only; the agent's tool result contains the full string. Pass it straight to `Write` / `JSON.parse`. Don't loop `slice(0, N)` calls trying to "page through" the data — wasted round-trips.
+
 Per-order schema: `{date, day, meal, items: [{name, brand, price}]}`. Cancelled/refunded are filtered at scrape time and never written.
 
 ---
