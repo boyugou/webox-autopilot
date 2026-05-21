@@ -73,10 +73,10 @@ Already onboarded if all of these exist:
 > You're already set up. What would you like to do?
 > 1. **Update preferences** — I'll ask what's changed
 > 2. **Re-sync everything** — hands off to `/webox-sync`
-> 3. **Update the skill** — pull the latest from GitHub
+> 3. **Update the skill files** — hands off to `/webox-update`
 > 4. **Nothing** — just checking
 
-For option 3, jump to "Step 8: Update Skill".
+For option 3, suggest the user run `/webox-update` (separate skill — clean GitHub pull without touching local data).
 
 **If not yet onboarded:** continue to Step 3.
 
@@ -692,14 +692,8 @@ If the user said nothing specific:
 
 ## Step 8: Update Skill (if user picked Option 3 in Step 2)
 
-```bash
-git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot-update
-cd /tmp/webox-autopilot-update && git log --oneline -1
-bash /tmp/webox-autopilot-update/install.sh
-rm -rf /tmp/webox-autopilot-update
-```
+This is now a dedicated skill — hand off:
 
-After update:
-- Report which commit was just installed.
-- Note: the current Claude Code session is still running the old skill files in memory. **Restart Claude Code** for the new version to take effect.
-- `~/Documents/WeBox/` files (preferences, profile, history, reviews) are never touched by updates.
+> To update the skill files, run `/webox-update`. It pulls the latest from GitHub, diffs the schema against your local config.yaml, and tells you whether you need to re-onboard. Your data in `~/Documents/WeBox/` is preserved.
+
+Don't reimplement the update flow here — `/webox-update` is the single source of truth for that workflow.
