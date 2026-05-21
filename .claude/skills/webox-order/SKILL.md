@@ -29,12 +29,87 @@ Read the markdown file. Treat any bullets / paragraphs the user has written as *
 ### 1c. Item reviews (`item-reviews.md`)
 Heavily injected into Step 4 selection.
 
-### 1d. Order history (per-week JSON)
-Read only week files overlapping `history_window_days` (typically last 4 weeks + current/next). Two purposes:
+### 1d. Order history (per-week JSON) — LOCAL CACHE ONLY, refresh next
+Read week files overlapping `history_window_days` (typically last 4 weeks + current/next). Two purposes:
 - **Slot occupancy:** any `✅` (active) or `📝 planned` entry blocks that slot
 - **Variety tracking:** productIds in recent entries → avoid repeating (mains only)
 
-If the latest week file's `synced_at` is more than 1 day old → re-sync via `/webox-sync` first (or inline the order-history-fetch JS from webox-sync Step 3).
+**These local files are stale by default** — they're only fully refreshed during `/webox-onboard` or `/webox-sync`. Step 1e below is REQUIRED before you trust them for slot-occupancy decisions.
+
+### 1e. ALWAYS refresh recent orders before planning (mandatory)
+
+**Critical:** local `orders/YYYY-Www.json` files only get fully synced during `/webox-onboard` or `/webox-sync`. Orders placed between syncs are invisible if you trust the local files alone. This caused a real bug where the agent said "no orders this week" when the user actually had several active orders that just hadn't been synced locally yet.
+
+**Mandatory step:** before any planning, fetch the latest ~20 orders from the WeBox API and merge into local state. One quick call, ~150 ms.
+
+```javascript
+(async () => {
+  const params = 'client=web&status=Paid%2CPartialRefunded%2CPlanned%2CUnpaid%2COnHold&pageSize=20&pageIndex=1&type=Individual&orderBy=id&desc=true&referenceTypes=GROUP_ORDER_META';
+  const r = await fetch(`/api/orders/list?${params}`, { credentials: 'include' });
+  const j = await r.json();
+  if (j.code !== 1) return JSON.stringify({ error: 'orders fetch failed', code: j.code });
+  const recent = [];
+  for (const o of (j.data.result || [])) {
+    // Include Paid (active), Planned (future-scheduled), PartialRefunded — anything that occupies a slot.
+    // Skip Refunded / Cancelled only.
+    if (['Refunded', 'Cancelled'].includes(o.order?.status)) continue;
+    for (const pkg of (o.orderPackages || [])) {
+      recent.push({
+        orderId: 'No.' + o.order.id,
+        status: o.order.status,
+        dateShippingMs: pkg.dateShipping,
+        timeShipping: pkg.timeShipping,
+        total: o.order.totalCharge || 0,
+        items: (pkg.extItems || []).map(it => ({
+          productId: it.productId, productSpecialId: it.productSpecialId, portionId: it.portionId,
+          quantity: it.quantity, price: (it.pricePerUnitCents ?? it.priceCents ?? 0) / 100
+        }))
+      });
+    }
+  }
+  return JSON.stringify({ count: recent.length, totalCount: j.data.totalCount, recent });
+})()
+```
+
+Then **merge into the appropriate per-week file**:
+```bash
+# In Bash, after the JS returns the array, run this Python:
+uv run --no-project python3 << 'EOF'
+import json, os, datetime
+# Paste the JS-returned 'recent' array here as a Python literal, OR read it from a tmpfile.
+recent = $RECENT_JSON
+out_dir = os.path.expanduser("~/Documents/WeBox/orders")
+os.makedirs(out_dir, exist_ok=True)
+by_week = {}
+for o in recent:
+    d = datetime.datetime.fromtimestamp(o["dateShippingMs"]/1000, tz=datetime.timezone.utc).date()
+    iy, iw, _ = d.isocalendar()
+    by_week.setdefault(f"{iy}-W{iw:02d}", []).append({
+        "date": d.isoformat(), "day": d.strftime("%a"),
+        "meal": o["timeShipping"], "orderId": o["orderId"],
+        "status": o["status"], "total": o["total"], "items": o["items"]
+    })
+for week, entries in by_week.items():
+    path = f"{out_dir}/{week}.json"
+    if os.path.exists(path):
+        old = json.load(open(path))
+        existing = {(e["date"], e["meal"]): e for e in old["orders"]}
+        for e in entries: existing[(e["date"], e["meal"])] = e
+        old["orders"] = sorted(existing.values(), key=lambda x: x["date"], reverse=True)
+        old["synced_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        json.dump(old, open(path,"w"), indent=2)
+    else:
+        ws = datetime.date.fromisocalendar(int(week[:4]), int(week[6:]), 1).isoformat()
+        json.dump({"week": week, "week_starts": ws,
+                   "synced_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                   "orders": entries}, open(path,"w"), indent=2)
+print("✓ merged", len(recent), "recent orders into", len(by_week), "week files")
+EOF
+```
+
+**Status filter rationale:** include `Paid` (active), `Planned` (future-scheduled — common case where the user pre-ordered for later in the week), `PartialRefunded`, `Unpaid`, `OnHold`. Exclude only `Refunded` and `Cancelled` — those slots are open again.
+
+Without this step, slot-occupancy checks lie and the planner happily double-orders a slot that's already booked.
 
 ---
 

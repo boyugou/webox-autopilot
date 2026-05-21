@@ -210,7 +210,7 @@ Same accumulate-on-page + return-summary pattern as webox-onboard Step 5. Stash 
           shippingEnd_local_ms: ext.shippingEnd
         };
       }
-      if (r.order?.status !== 'Paid') continue;
+      if (['Refunded', 'Cancelled'].includes(r.order?.status)) continue;  // keep Paid + Planned + PartialRefunded + Unpaid + OnHold
       const items = (pkg.extItems || []).map(it => ({
         productId: it.productId,
         productSpecialId: it.productSpecialId,

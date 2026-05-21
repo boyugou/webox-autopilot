@@ -177,7 +177,7 @@ The full order history for a long-time user can be 400+ orders × multiple items
             shippingEnd_local_ms: ext.shippingEnd
           };
         }
-        if (o.order?.status !== 'Paid') continue;
+        if (['Refunded', 'Cancelled'].includes(o.order?.status)) continue;  // keep Paid + Planned + PartialRefunded + Unpaid + OnHold
         active.push({
           orderId: 'No.' + o.order.id,
           dateShippingMs: pkg.dateShipping,
