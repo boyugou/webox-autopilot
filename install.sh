@@ -17,15 +17,15 @@ WEBOX_DIR="$HOME/Documents/WeBox"
 
 echo "Installing webox-autopilot skills..."
 
-# Install all five skills (and any sibling .md docs like SITEMAP.md)
-for skill in webox-onboard webox-order webox-order-all webox-calendar webox-reset; do
+# Install all six skills (and any sibling .md docs like SITEMAP.md)
+for skill in webox webox-onboard webox-order webox-favorite webox-sync-calendar webox-reset; do
   mkdir -p "$CLAUDE_SKILLS/$skill"
   cp "$SKILLS_SRC/$skill"/*.md "$CLAUDE_SKILLS/$skill/"
   echo "  ✓ $skill"
 done
 
-# Create data directory (but do NOT copy a template preferences.md — let webox-onboard create it
-# from the user's actual answer. Otherwise webox-onboard would think the user is already onboarded.)
+# Create data directory (do NOT copy a template preferences.md — let webox-onboard create it
+# from the user's actual answers. Otherwise webox-onboard would skip onboarding.)
 mkdir -p "$WEBOX_DIR"
 echo "  ✓ Data directory ready at $WEBOX_DIR"
 

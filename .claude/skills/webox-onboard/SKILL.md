@@ -57,21 +57,21 @@ mkdir -p ~/Documents/WeBox
 
 A user is considered **already onboarded** if **both** of these are true:
 - `~/Documents/WeBox/preferences.md` exists, AND
-- `~/Documents/WeBox/order-history.md` exists
+- `~/Documents/WeBox/orders/` directory exists with at least one `YYYY-Www.json` file (or is documented as empty after a sync that returned no orders)
 
-Both files together confirm onboarding actually ran (a stray preferences file alone — manually copied or left from a prior partial setup — wouldn't indicate that history was synced).
+Both confirm onboarding actually ran (a stray preferences file alone — manually copied or left from a prior partial setup — wouldn't indicate history was synced).
 
 **If already onboarded:**
 
 > You're already set up! Here's what I found in ~/Documents/WeBox/:
 > - preferences.md ✓
 > - item-reviews.md (X items reviewed)
-> - order-history.md (last synced: DATE, X past active orders)
+> - orders/ (X weeks of history, latest sync DATE, Y total active orders)
 > - menu-cache/ (X cached slot snapshots)
 >
 > What would you like to do?
 > 1. **Update preferences** — I'll ask what's changed
-> 2. **Re-sync order history** — pull the latest orders from WeBox
+> 2. **Re-sync order history** — pull the latest orders from WeBox (hands off to `webox-sync-calendar`)
 > 3. **Clear menu caches** — force a fresh menu scrape on your next order
 > 4. **Update the skill** — pull the latest version from GitHub
 > 5. **Nothing** — just checking
@@ -94,7 +94,7 @@ Say:
 
 Two scrapes, one tab at a time, in the same single tab where possible. Total time ~10–15s.
 
-**4a. Order history first** — navigate the existing main tab to `https://www.webox.com/order/list/normal` and run the smart-scroll scrape from SCRIPT_4A below. Save to `~/Documents/WeBox/order-history.md`.
+**4a. Order history first** — navigate the existing main tab to `https://www.webox.com/order/list/normal` and run the smart-scroll scrape from SCRIPT_4A below. Convert each order to per-week JSON and save to `~/Documents/WeBox/orders/YYYY-Www.json` (see schema in Step 5b).
 
 **4b. Then favorites** — in the same tab, navigate to `https://www.webox.com/menu/section/My%20Favorites?date=<TODAY_YYYY-MM-DD>&shippingTime=Lunch` and run SCRIPT_4B. Save to `~/Documents/WeBox/menu-cache/<TODAY>-Lunch.json` as the warm cache (see Step 5c format).
 
@@ -134,9 +134,11 @@ The order list page is heavier than menu pages. **Keep scrolls fast (300ms) and 
 })()
 ```
 
-Mark `isActive: true` entries as `✅` in `order-history.md`. Refunded/cancelled → `↩️` and slot stays openable. Empty result → write a "no orders yet" placeholder.
+Filter `o.isActive` only (cancelled/refunded are never persisted). Convert each `"Mon 05/18"` → full ISO date → ISO week → merge into `~/Documents/WeBox/orders/<YYYY-Www>.json`. See Step 5b for the schema and merge logic.
 
-**Recovery if CDP times out:** if this script times out, the order list page may be hung. Skip it for first-run (write an empty order-history.md with a comment "first sync deferred — will retry on first webox-order call"). Don't retry in onboarding — onboarding shouldn't block on this.
+Empty result (new user, no orders) → create `~/Documents/WeBox/orders/.empty` marker so the "already onboarded" check in Step 2 succeeds on next run.
+
+**Recovery if CDP times out:** if this script times out, the order list page may be hung. Skip it for first-run (just create the `.empty` marker) — webox-sync-calendar will do the first sync later. Don't retry in onboarding — onboarding shouldn't block on this.
 
 #### 4b. Favorites scrape (SCRIPT_4B)
 
@@ -226,29 +228,38 @@ If the user didn't mention anything specific, that's fine — say so:
 ✅ Saved preferences using all defaults. Edit ~/Documents/WeBox/preferences.md anytime.
 ```
 
-### 5b. Write order-history.md from scraped data
+### 5b. Write per-week order files from scraped data
 
-```markdown
-# WeBox Order History
-last_synced: YYYY-MM-DD
+For each scraped active order:
+1. Convert `"Mon 05/18"` to a full ISO date (use current year; if the resulting date is in the future, use previous year).
+2. Compute the ISO week → `YYYY-Www` (e.g. `2026-W21` for Mon 2026-05-18).
+3. Read or create `~/Documents/WeBox/orders/<YYYY-Www>.json` and append/merge.
 
-<!-- Long-term record. Recent entries (within history_window_days) are loaded for variety tracking. -->
-
-## YYYY-MM
-
-### Day MM/DD Meal ✅ #ORDERNUM
-- Item Line 1
-- Item Line 2
-...
+Schema:
+```json
+{
+  "week": "2026-W21",
+  "week_starts": "2026-05-18",
+  "synced_at": "2026-05-21T14:30:00",
+  "orders": [
+    {
+      "date": "2026-05-18",
+      "day": "Mon",
+      "meal": "Lunch",
+      "orderId": "No.3258400",
+      "status": "active",
+      "total": 28.30,
+      "items": [
+        { "brand": "Xiangchuan Kitchen", "name": "Mongolian Beef Bento", "qty": 1, "price": 17.45 }
+      ]
+    }
+  ]
+}
 ```
 
-Group by `YYYY-MM` section. If scrape was empty:
-```markdown
-# WeBox Order History
-last_synced: YYYY-MM-DD
+Dedupe by `orderId`. Set `synced_at` on every touched week file.
 
-<!-- No orders yet. This file will populate as you place orders through webox-order. -->
-```
+If scrape returned 0 orders (new user), create `~/Documents/WeBox/orders/.empty` as a marker so future runs detect "onboarded" correctly.
 
 ### 5c. Write today's menu cache (warm cache for first order)
 
@@ -294,15 +305,15 @@ Create the `menu-cache/` directory if it doesn't exist. If favorites returned em
 ```
 ✅ WeBox setup complete! Files in ~/Documents/WeBox/:
 
-  preferences.md         — budget $30, prefer Chinese/Japanese, no mushrooms
-  item-reviews.md        — empty (grows as you order and give feedback)
-  order-history.md       — X past active orders synced (latest: DATE)
-  menu-cache/<TODAY>.json — X favorites scraped as warm cache for first order
+  preferences.md            — budget $30, prefer Chinese/Japanese, no mushrooms
+  item-reviews.md           — empty (grows as you order and give feedback)
+  orders/2026-W21.json, ... — X weeks of history, Y past active orders
+  menu-cache/<TODAY>.json   — X favorites scraped as warm cache for first order
 
 You're ready to order! Try:
-  "Order my lunch for tomorrow"          (smart default — favorites first)
-  "Order something new for tomorrow"     (full menu via webox-order-all)
-  "Show my WeBox calendar"
+  "Order my lunch for tomorrow"        (default — curated full menu via webox-order)
+  "Order from my favorites tomorrow"   (faster narrow scope via webox-favorite)
+  "Show my WeBox calendar"             (via webox-sync-calendar)
 ```
 
 Tailor the preferences summary line to what the user actually told you.

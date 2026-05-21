@@ -10,7 +10,7 @@ Clears all local webox-autopilot data and re-runs onboarding.
 Files in `~/Documents/WeBox/` that get deleted:
 - `preferences.md`
 - `item-reviews.md`
-- `order-history.md`
+- `orders/` (per-week JSON history files)
 - `items-with-options.md`
 - `menu-cache/` (entire directory)
 
@@ -33,7 +33,7 @@ Then ask:
 > About to wipe these files in ~/Documents/WeBox/:
 >   - preferences.md
 >   - item-reviews.md (X items reviewed)
->   - order-history.md (X past orders, history will resync from WeBox)
+>   - orders/ (X weeks of history files — will resync from WeBox)
 >   - items-with-options.md
 >   - menu-cache/ (X cached menus)
 >
