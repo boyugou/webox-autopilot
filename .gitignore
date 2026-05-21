@@ -5,20 +5,22 @@
 .Spotlight-V8
 .Trashes
 
-# Local test and dev files — never commit these
+# Local test and dev files — never commit
 *.local
 *.test
 *.tmp
 test-*
 dev-*
+scratch-*
 
 # Local user data — lives in ~/Documents/WeBox/, not in the repo
 # (listed here in case anyone accidentally copies them into the project dir)
 preferences.local.md
 favorites-cache.md
+order-history.md
 order-history-cache.json
-order-calendar.md
-plan-cache.md
+order-calendar.md         # legacy name — kept here so old files don't get committed
+plan-cache.md             # legacy name — kept here so old files don't get committed
 item-reviews.md
 items-with-options.md
 
@@ -27,3 +29,4 @@ items-with-options.md
 .idea/
 *.swp
 *.swo
+*~

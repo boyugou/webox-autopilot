@@ -3,7 +3,15 @@
 # Usage: bash install.sh
 set -e
 
-SKILLS_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.claude/skills"
+# Sanity check — must run from a cloned repo
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILLS_SRC="$SCRIPT_DIR/.claude/skills"
+if [ ! -d "$SKILLS_SRC" ]; then
+  echo "Error: skills directory not found at $SKILLS_SRC"
+  echo "Run install.sh from inside the cloned webox-autopilot repo."
+  exit 1
+fi
+
 CLAUDE_SKILLS="$HOME/.claude/skills"
 WEBOX_DIR="$HOME/Documents/WeBox"
 
@@ -16,21 +24,15 @@ for skill in webox-onboard webox-order webox-calendar webox-sync-favorites; do
   echo "  ✓ $skill"
 done
 
-# Set up data directory (visible in ~/Documents/, never overwrite existing files)
+# Create data directory (but do NOT copy a template preferences.md — let webox-onboard create it
+# from the user's actual answer. Otherwise webox-onboard would think the user is already onboarded.)
 mkdir -p "$WEBOX_DIR"
-if [ ! -f "$WEBOX_DIR/preferences.md" ]; then
-  cp "$(dirname "${BASH_SOURCE[0]}")/preferences.md" "$WEBOX_DIR/"
-  echo "  ✓ Created $WEBOX_DIR/preferences.md"
-  echo "    → Edit this file, or run /webox-onboard to set it up interactively"
-else
-  echo "  ✓ $WEBOX_DIR/preferences.md already exists (not overwritten)"
-fi
+echo "  ✓ Data directory ready at $WEBOX_DIR"
 
 echo ""
-echo "Done! Your WeBox data lives in: $WEBOX_DIR"
+echo "✅ Installed. Next step:"
 echo ""
-echo "Next step — run Claude Code with Chrome integration:"
-echo "  claude --chrome"
+echo "   1. Start Claude Code with Chrome integration:  claude --chrome"
+echo "   2. Run:  /webox-onboard  (or say 'set up WeBox')"
 echo ""
-echo "Then run: /webox-onboard"
-echo "  (sets up your preferences, syncs favorites and order history)"
+echo "Onboarding takes ~2 minutes and creates all your files in $WEBOX_DIR"

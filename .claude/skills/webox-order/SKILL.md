@@ -5,114 +5,171 @@ description: Autonomously order food from WeBox (webox.com) using the user's log
 
 # WeBox Order Skill
 
-You are ordering food from WeBox on behalf of the user. Use the `mcp__claude-in-chrome__*` tools to control their Chrome browser (already logged in).
+Data directory: `~/Documents/WeBox/`  
+All user data files are plain text — open in any editor or Finder.
 
 ## Defaults
 
-- **Meal types:** When not specified, order both **Lunch and Dinner** for each day (each is a separate cart/checkout).
-- **Weekends:** When ordering "next week" or a multi-day range, **skip Saturday and Sunday** unless the user explicitly requests them. Weekends typically only offer HappyHour (Self Pay), not subsidized Lunch/Dinner.
-- **Confirmation mode:** Default is `auto` — decide and order without asking, unless an error or ambiguity requires clarification. If set to `confirm` in preferences, present the full plan and wait for approval before placing any orders.
+- **Meal types:** When not specified, order both **Lunch and Dinner** per day (separate cart/checkout each).
+- **Weekends:** Skip Saturday and Sunday for multi-day ranges unless explicitly requested.
+- **Confirmation mode:** Default `auto` — order without asking, pause only on errors or ambiguity. Set `confirm_before_order: true` for plan-first mode.
 
-## Known WeBox Constraints
+## WeBox Constraints
 
-- **7-day ordering window:** WeBox only allows ordering up to 7 days in advance. Do not attempt dates beyond this window — they won't appear on the menu.
-- **Weekend availability:** Saturday and Sunday typically only have HappyHour (Self Pay), not subsidized Lunch/Dinner.
-- **Meal cutoff times:** Orders for a given meal must be placed before the cutoff (usually mid-morning for Lunch). If the meal time has passed, skip that slot.
-- **Budget applies per meal slot** (one checkout per day/meal). Each date+mealtime is a separate cart and checkout.
+- **7-day window:** Can only order up to 7 days ahead.
+- **Meal cutoffs:** Lunch has a mid-morning cutoff. Skip slots where cutoff has passed.
+- **Budget per slot:** Each date+meal is a separate checkout. Budget applies per slot.
 
 ---
 
 ## Step 0: Prerequisite Check
 
-### 0a. Claude in Chrome connected?
-Call `tabs_context_mcp`. If it returns no tabs or an error, stop:
-> Claude in Chrome doesn't seem to be connected. Make sure Chrome is running with the [Claude in Chrome extension](https://code.claude.com/docs/en/chrome) enabled, then try again.
+1. **Chrome connected?** Call `tabs_context_mcp`. If no tabs, stop:
+   > Claude in Chrome doesn't seem to be connected. Make sure Chrome is running with the [Claude in Chrome extension](https://code.claude.com/docs/en/chrome) enabled.
 
-### 0b. First-run check
-If `~/Documents/WeBox/preferences.md` does **not** exist, stop and say:
-> It looks like you haven't set up WeBox yet. Run `/webox-onboard` first — it takes about 2 minutes and sets up your preferences, favorites, and order history.
-
-If the file exists, continue to Step 1.
+2. **Preferences exist?** Check `~/Documents/WeBox/preferences.md`. If missing, stop:
+   > You haven't set up WeBox yet. Run `/webox-onboard` first (or say "set up WeBox") — takes about 2 minutes.
 
 ---
 
-## Step 1: Load User Preferences and Caches
+## Step 1: Load Preferences and History
 
-### 1a. Read preferences
-Read `~/Documents/WeBox/preferences.md`.
+### 1a. Preferences
+Read `~/Documents/WeBox/preferences.md`. Extract:
+- `budget`, `budget_mode`, `validate_budget`
+- `confirm_before_order`
+- `default_meals`, `skip_weekends`
+- `avoid_repeat_days` (default: 7), `history_window_days` (default: 28 — ~3 weeks past + 7-day future window)
+- `allow_repeat_categories`, `allow_repeat_patterns` — items matching these are exempt from variety rules (fillers like milk, water, salad, eggs that the user wants to repeat freely)
+- `category_mode` (all | whitelist | blacklist), `category_list`
+- Dietary restrictions, allergens, preferred/avoided cuisines, drinks
 
-Key settings to extract:
-- `budget` and `budget_mode` (spend-up-to vs ceiling-only)
-- `confirm_before_order` (auto vs confirm)
-- `validate_budget` (Python price check)
-- `plan_cache_days` (default: 14)
-- `avoid_repeat_days` (default: 3)
-- Dietary restrictions, preferred cuisines, drink policy
+### 1b. Item reviews
+Read `~/Documents/WeBox/item-reviews.md` if it exists. Keep loaded for Step 4.
 
-### 1b. Load item reviews
-Read `~/Documents/WeBox/item-reviews.md` if it exists. This file contains the user's personal ratings and notes on specific dishes. Keep this loaded — it will be injected into selection decisions in Step 4.
+### 1c. Order history (variety + slot occupancy)
+Read `~/Documents/WeBox/order-history.md`. This single file serves two purposes:
+- **Slot occupancy:** which date+meal slots are already ordered (skip them)
+- **Variety tracking:** what items were ordered recently (avoid repeating within `avoid_repeat_days`)
 
-### 1c. Prune stale plan cache entries
-Read `~/Documents/WeBox/plan-cache.md` and drop any entries older than `plan_cache_days`. Use remaining entries for variety tracking (avoid items ordered in the past `avoid_repeat_days` days).
+Only load entries within the past `history_window_days` and any future planned entries into context. Older entries stay in the file but are not loaded.
 
-### 1d. Load favorites cache
-Check `~/Documents/WeBox/favorites-cache.md`:
-- If it exists and `last_updated` is within **7 days**: use the cached list, skip scraping the favorites page.
-- If missing or stale: scrape the favorites page (Step 3), then write the results to `favorites-cache.md`.
+If `last_synced` is more than 1 day old → re-scrape order history (Step 2) before proceeding.
+If file is malformed or missing → treat as missing and re-scrape.
 
-**Cache format:**
-```markdown
-# Favorites Cache
-last_updated: YYYY-MM-DD
+### 1d. Favorites cache
+Read `~/Documents/WeBox/favorites-cache.md`:
+- Fresh (≤ 7 days) → use as-is, skip scraping
+- Stale or missing → scrape (Step 3), update the file
+- Malformed → treat as missing, re-scrape
 
-- Brand | Item Name | $XX.XX | rating X.X
-- Brand | Item Name | $XX.XX | rating X.X
-...
-```
+To force a refresh, dispatch `webox-sync-favorites` skill (say "refresh my favorites").
 
-To force a refresh, the user can say "refresh my favorites" and you should delete or ignore the cache.
+---
 
-### 1e. Load order history cache
-Check `~/Documents/WeBox/order-history-cache.json`:
-- If it exists and `cached_at` is within **1 hour**: use it, skip navigating to `/order/list/normal`.
-- Otherwise: scrape order history (Step 2), then write to the cache file.
+## Step 2: Sync Order History (if stale)
 
-**Cache format:** `{"cached_at": "2026-05-20T14:30:00", "orders": [...]}`
+*Skip if `order-history.md` is fresh (Step 1c).*
 
-## Step 2: Check Existing Orders (Avoid Double-Ordering)
-
-Use this decision tree:
-
-1. **Read `~/Documents/WeBox/order-calendar.md`** — if it exists and `last_synced` is within 1 day, use it as the authoritative source of already-ordered slots. No network request needed.
-
-2. **Otherwise**, scrape `/order/list/normal` once and update both `order-calendar.md` and `order-history-cache.json`:
+Navigate to `https://www.webox.com/order/list/normal`. The page uses infinite scroll:
 
 ```javascript
 (async () => {
+  for (let i = 0; i < 5; i++) {
+    window.scrollTo(0, document.body.scrollHeight);
+    await new Promise(r => setTimeout(r, 800));
+  }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
     const mealLine = lines.find(l => /Lunch|Dinner|HappyHour|Breakfast/.test(l));
-    return { date: dateLine, meal: mealLine };
-  }).filter(o => o.date);
-  return JSON.stringify(orders.slice(0, 30));
+    const orderNum = lines.find(l => /^#\d+/.test(l) || /Order\s*#\d+/i.test(l));
+    // Capture item-looking lines
+    const itemLines = lines.filter(l =>
+      l !== dateLine && l !== mealLine && l !== orderNum &&
+      l.length > 3 && !/^\$/.test(l) && !/^(Cancel|View|Reorder|Track)/i.test(l)
+    );
+    return { date: dateLine, meal: mealLine, orderNum: orderNum || null, items: itemLines };
+  }).filter(o => o.date && o.meal);
+  return JSON.stringify(orders);
 })()
 ```
 
-After any successful checkout, **immediately append** the new slot to `order-calendar.md` — don't wait for the next sync.
+Merge into `~/Documents/WeBox/order-history.md`:
+- Add new ordered slots (don't overwrite existing entries — local data may have more detail than the scrape)
+- Update `last_synced` line
+- If the scrape returns empty (new user, no orders), write a `# Order History\nlast_synced: DATE\n\n<!-- No orders yet -->` placeholder
 
-## Step 3: Scrape Menu for Each Target Date
+Skip any target date+meal already in the history.
 
-For each **date** (not each meal slot) that needs ordering, scrape the favorites page once — the favorites list is the same regardless of whether you're ordering Lunch or Dinner on that day.
+---
 
-*If favorites-cache is fresh (Step 1c), skip this step entirely for dates within its validity window.*
+## Step 3: Scrape Menu
 
-### URL Format
-- **Favorites:** `https://www.webox.com/menu/section/My%20Favorites?date=YYYY-MM-DD&shippingTime=Lunch`
-- **Main menu:** `https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch`
-- **By cuisine:** `https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=Chinese&objName=Chinese`
+### URL Reference
 
-Note: `shippingTime` can be `Lunch` or `Dinner` — availability may differ, but favorites are the same.
+**Favorites (primary):**
+```
+https://www.webox.com/menu/section/My%20Favorites?date=YYYY-MM-DD&shippingTime=Lunch
+```
+Replace `Lunch` with `Dinner` for dinner. Favorites list is the same for both shippingTimes — scrape once per date.
+
+**Full menu:**
+```
+https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch
+```
+
+**By category** (`objId`/`objName` = URL-encoded category name):
+```
+https://www.webox.com/?date=YYYY-MM-DD&shippingTime=Lunch&objType=CUISINE&objId=CATEGORY&objName=CATEGORY
+```
+
+**All categories** (use these exact URL values):
+
+| Category | URL value |
+|----------|-----------|
+| Deals | `Deals` |
+| Chinese | `Chinese` |
+| Bowl | `Bowl` |
+| American | `American` |
+| Drink | `Drink` |
+| Side | `Side` |
+| Entrée | `Entr%C3%A9e` |
+| Noodles | `Noodles` |
+| Salad | `Salad` |
+| Japanese | `Japanese` |
+| Snack | `Snack` |
+| Korean | `Korean` |
+| Produce | `Produce` |
+| Thai | `Thai` |
+| Sandwich | `Sandwich` |
+| Italian | `Italian` |
+| Vietnamese | `Vietnamese` |
+| Mexican | `Mexican` |
+| Burger | `Burger` |
+| Mediterranean | `Mediterranean` |
+| Wrap | `Wrap` |
+| Indian | `Indian` |
+| Dairy & Eggs | `Dairy%20%26%20Eggs` |
+| Greek | `Greek` |
+| Dessert | `Dessert` |
+| French | `French` |
+| Taco | `Taco` |
+| Sushi | `Sushi` |
+| Burrito | `Burrito` |
+| Pizza | `Pizza` |
+| Filipino | `Filipino` |
+| Burmese | `Burmese` |
+| Nepalese | `Nepalese` |
+
+### Category Filter (whitelist / blacklist)
+
+Apply `category_mode` from preferences:
+- `all` → consider all categories when expanding beyond favorites
+- `whitelist` → only consider categories in `category_list`
+- `blacklist` → consider all categories EXCEPT those in `category_list`
+
+The user's `preferred_cuisines` always takes priority — if "Chinese" is in `preferred_cuisines`, scrape Chinese even if not in the whitelist (assume the user wants it).
 
 ### Scraping Function
 
@@ -137,169 +194,209 @@ Note: `shippingTime` can be `Lunch` or `Dinner` — availability may differ, but
 })()
 ```
 
-After a fresh scrape, update `~/Documents/WeBox/favorites-cache.md`.
+### Parallel Scraping (multi-tab strategy)
 
-### What to Scrape
+When scraping multiple dates or categories, **open separate tabs in parallel** rather than navigating sequentially in one tab:
 
-Always scrape **Favorites** first. Only scrape additional categories if:
-- No favorites are available for that date
-- The user's prompt requests a specific cuisine not in favorites
-- Budget can accommodate more items after favorites are selected
+```
+For each date or category to scrape:
+  1. tabs_create_mcp → new tabId
+  2. navigate that tab to the target URL
+  3. (don't wait — kick off next tab immediately)
+
+Then for each tab:
+  4. run scraping JS once the page is loaded
+  5. tabs_close_mcp when done
+```
+
+Practical limit: 3–5 concurrent tabs. Cuts total scraping time roughly N×.
+
+### What to Scrape — Decision Tree
+
+1. **Favorites first** (use cache if fresh; scrape if stale/missing). Covers all meal slots for that date.
+2. **If favorites returns 0 items** (or very few given budget): fall back to category pages.
+   - Use `category_mode` + `category_list` to pick which categories.
+   - Always include `preferred_cuisines`.
+   - Skip anything in `cuisines_to_avoid`.
+3. **If user prompt requests specific cuisine** (e.g., "I want Thai today"): scrape that category directly regardless of preferences filter.
+
+---
 
 ## Step 4: Build the Full Order Plan
 
-After scraping all needed dates, build the complete plan for **all days at once** before touching the cart.
+Build all-days plan before touching cart.
 
 ### Budget Rules
-- **Default budget:** $30.00 per meal slot (strict cap on food item total)
-- **spend-up-to mode (default):** Aim to use most of the budget, prioritize variety over maximizing value
-- **ceiling-only mode:** Pick what seems best without trying to fill the budget
+- `spend-up-to` (default): aim to use most of the budget per slot; prioritize variety
+- `ceiling-only`: pick what looks best without filling the budget
+- Cap is on food item totals (not delivery fees or tax)
 
-### Selection Heuristics
+### Quantity Handling
+Items can be ordered in quantities > 1 (e.g., 6 tea eggs, 10 milks). Represent as `× N`:
+```
+- Northwest China Cuisine — Tea Egg × 6 — $14.70   ($2.45 × 6)
+```
+Budget validation must multiply unit price × quantity.
 
-Apply these in order — higher rules take precedence:
+### Selection Priority
 
 1. **Hard constraints (never violate):**
-   - Dietary restrictions (vegetarian, vegan, etc.)
-   - Allergens to avoid
-   - Items the user has explicitly rated 1/5 or marked "never order again" in item-reviews.md
-   - Budget cap
+   - Dietary restrictions, allergens
+   - Items rated 1/5 or tagged `never-again` in reviews
+   - Strongly-negative review comments (e.g., "这个超级咸", "肉太少", "inedible") → treat as hard exclude even without rating
+   - Budget cap (including quantities)
 
 2. **Strong preferences:**
-   - Items rated 4–5/5 in item-reviews.md → strongly prefer these
-   - Items rated 2–3/5 → deprioritize but don't exclude
-   - Preferred cuisines from preferences file
-   - User's prompt constraints (e.g., "healthy", "Chinese only", "something light")
+   - Items rated 4–5/5 or with consistently positive comments → top candidates
+   - User's prompt constraints
+   - `preferred_cuisines` from preferences
 
-3. **Variety and recency:**
-   - Avoid items ordered within `avoid_repeat_days` days (check plan-cache.md)
-   - Cross-day variety within the same ordering session — don't repeat across days
+3. **Variety (main dishes only):**
+   - Variety rules apply ONLY to **main dishes** (entrées, bowls, bento, noodles, hot pots — the focal item of a meal).
+   - Items in `allow_repeat_categories` (Drink, Side, Snack, Dairy & Eggs, Produce by default) and items matching `allow_repeat_patterns` (milk, water, tea egg, etc.) are treated as **fillers** and are EXEMPT from variety rules. They can repeat day after day, and ordering multiple of the same (e.g., 5 waters) is fine.
+   - For mains: avoid items ordered within `avoid_repeat_days` (check recent entries in `order-history.md`)
+   - Cross-day variety within this session: don't pick the same main twice across consecutive days
 
 4. **Soft preferences:**
-   - Prioritize WeBox favorites (hearted items)
-   - Preferred cuisines
-   - Budget mode (spend-up-to: fill the budget with variety; ceiling-only: pick best regardless of total)
+   - WeBox favorites > non-favorites
+   - Fill remaining budget with complementary fillers (sides, drinks) if `spend-up-to`
+   - If the user clearly wants to stock up on a filler ("get me 10 milks for the week"), spread the quantity across days OR put them all in one slot — use judgment based on prompt phrasing.
 
-### Item Reviews Injection
+### Item Reviews — How to Read Them
 
-When item-reviews.md is loaded, treat the review notes as direct signals:
+Reviews mix structured fields (rating, tags) with **free-form natural-language comments**. Both matter:
 
-- **"amazing", "love this", 5/5** → bump this item to the top of candidates
-- **"too salty", "portion too small", 2/5** → deprioritize; mention the note if you still pick it due to no better options
-- **"never order again", "disliked", 1/5** → treat as a hard exclude (same as allergen)
-- **Free-text notes** (e.g., "always get extra sauce", "prefer the spicy version") → use as context for option selection when a modal opens
+- **Rating** (when present): 5/5 = strong prefer, 1/5 = hard exclude
+- **Comments** (always weighted): synthesize sentiment yourself
+  - "超级咸" / "too salty" / "inedible" → hard exclude (treat as 1/5)
+  - "肉太少" / "small portion" → deprioritize, only pick if budget forces
+  - "love this" / "amazing" / "always order" → top preference
+  - "好吃但有点贵" / "good but pricey" → consider price-performance
+- **Multiple comments stack:** if comments diverge across dates (loved it once, hated it later), trust the most recent
+- **No rating, only comments:** infer sentiment; don't ignore the item just because no number was given
 
-Include the item review in your reasoning when it influences a decision, e.g.:
-> Picking Mongolian Beef bento (rated 5/5: "always order this") over Spicy Hot Pot (rated 2/5: "too oily").
+When selection is influenced by a review, mention it in plan reasoning:
+> Skipping Spicy Hot Pot — review says "too oily, didn't finish" (2026-05-15).
 
 ### Plan Format
 
-Produce the full plan in this format:
-
 ```
-📋 Order Plan — [Date Range]
+📋 Order Plan — Mon May 25 – Fri May 29
 
 📅 Mon May 25, Lunch — $30.00 budget
-  - [Item Name] from [Brand] — $XX.XX
-  - [Item Name] from [Brand] — $XX.XX
-  Total: $XX.XX
-
-📅 Mon May 25, Dinner — $30.00 budget
-  - [Item Name] from [Brand] — $XX.XX
-  Total: $XX.XX
-
-📅 Tue May 26, Lunch — $30.00 budget
-  ...
+  - Xiangchuan Kitchen — Mongolian Beef Bento × 1 — $17.45
+  - Northwest China Cuisine — Tea Egg × 3 — $7.35  ($2.45 × 3)
+  - Mediterranean Grill House — Taboulleh Salad × 1 — $5.95
+  Total: $30.75 ❌  → over budget, drop Tea Egg × 1 → $28.30 ✓
 ```
 
-## Step 4b: Validate Budget (if enabled)
+---
 
-If `validate_budget: true` in preferences, run a Python one-liner to strictly verify each slot's item total before proceeding. This catches any arithmetic errors in Claude's selection.
+## Step 4b: Validate Budget (if `validate_budget: true`)
 
 ```bash
-python3 -c "
-prices = [PRICE1, PRICE2, ...]  # Replace with actual selected prices for this slot
-budget = BUDGET
-total = sum(prices)
-assert total <= budget, f'Budget exceeded: \${total:.2f} > \${budget:.2f}'
-print(f'Budget OK: \${total:.2f} / \${budget:.2f}')
+uv run --no-project python -c "
+items = [(17.45, 1), (2.45, 2), (5.95, 1)]  # (unit_price, quantity)
+budget = 30.0
+total = sum(p * q for p, q in items)
+assert total <= budget, f'Over budget: \${total:.2f} > \${budget:.2f}'
+print(f'OK: \${total:.2f} / \${budget:.2f}')
 "
 ```
 
-If the assertion fails: remove the most expensive non-essential item and re-validate. Do not proceed to cart until validation passes.
+If assertion fails: remove the most expensive non-essential item and re-validate.
 
-If `validate_budget: false` (default): skip this step and trust the arithmetic from Step 4.
+---
 
 ## Step 5: Confirm or Proceed
 
-### Auto mode (default: `confirm_before_order: false`)
+**Auto mode** (default): Print plan, proceed immediately. Pause only for unresolvable ambiguity, errors, or out-of-window dates.
 
-Print the plan, then immediately proceed to Step 6 without waiting. Only pause to ask the user if:
-- An item is ambiguous and requires a choice that preferences don't resolve
-- An unexpected error occurs that you can't recover from automatically
-- A date is outside the 7-day ordering window
-
-### Confirm mode (`confirm_before_order: true`)
-
-After printing the plan, **stop and ask:**
-
+**Confirm mode** (`confirm_before_order: true`):
 ```
-Does this plan look good? Reply "yes" to confirm, or tell me what to change.
+Does this plan look good? Say "yes" to confirm, or tell me what to change.
 ```
+Wait for reply, apply changes, re-confirm once before proceeding.
 
-Wait for the user's response. Apply any requested changes to the plan, then confirm once more before proceeding. Only proceed to Step 6 after explicit approval.
+---
 
-## Step 6: Save Plan to Cache
+## Step 6: Save Plan to Order History
 
-Before placing any orders, write the plan to `~/Documents/WeBox/plan-cache.md`.
+Write the plan to `~/Documents/WeBox/order-history.md` before any cart action. Use the unified format below — each slot is one entry, marked `📝 planned` initially, updated to `✅ ordered` after checkout.
 
-### Cache File Format
+### Unified Order History Format
 
 ```markdown
-# WeBox Order Plan Cache
-Last updated: YYYY-MM-DD
+# WeBox Order History
+last_synced: YYYY-MM-DD
 
-## [Day], [Date], [Meal] — $XX.XX planned
-- [Brand] — [Item Name] — $XX.XX
-- [Brand] — [Item Name] — $XX.XX
-Status: planned | ordered ✅ #ORDERNUM | skipped (reason) | modified
+<!-- Long-term record. Recent entries (within history_window_days) are loaded for variety tracking. -->
 
-## [Day], [Date], [Meal] — $XX.XX planned
-...
+## 2026-05
+
+### Mon 05/25 Lunch ✅ #3258700 — $28.30
+- Xiangchuan Kitchen — Mongolian Beef Bento × 1 — $17.45
+- Northwest China Cuisine — Tea Egg × 2 — $4.90
+- Mediterranean Grill House — Taboulleh Salad × 1 — $5.95
+
+### Mon 05/25 Dinner 📝 planned — $20.25
+- Ox 9 Lanzhou — Sliced Spicy Beef 8oz × 1 — $12.35
+- Horizon — Organic Milk × 2 — $7.90
+
+### Tue 05/26 Lunch ⏰ cutoff passed — not ordered
+
+### Wed 05/27 Lunch ✅ #3258742 — $25.95 (was: Mongolian Beef × 1, sold out → substituted Sliced Spicy Beef)
+- Ox 9 Lanzhou — Sliced Spicy Beef 8oz × 1 — $12.35
+- Mediterranean Grill House — Taboulleh Salad × 1 — $5.95
+- Northwest China Cuisine — Tea Egg × 3 — $7.35
 ```
 
-**Rules:**
-- Append new planned slots to the file (don't overwrite existing entries)
-- After each successful order, update that slot's `Status:` line to `ordered ✅ #ORDERNUM`
-- If an item was substituted (e.g., sold out → replacement), update the item line with the actual item ordered
-- Prune entries older than `plan_cache_days` (default: 14) at the start of each session
+Status icons:
+- `✅` ordered (with order number)
+- `📝` planned (not yet placed)
+- `⏰` cutoff passed
+- `🚫` skipped (sold out, no substitute, user cancelled, etc.)
+- `🔒` outside 7-day window
+
+Rules:
+- Append new slots; never overwrite existing entries
+- Update status from `📝` to `✅` after checkout, set the order number and actual total
+- Note substitutions inline (e.g., "was: X, sold out → substituted Y")
+- Older entries stay forever (long-term record); only the recent window is loaded into context
+
+---
 
 ## Step 7: Add Items to Cart
 
-Navigate to the correct date+meal URL before adding items. Each date's cart is separate — switching the date URL resets the cart context.
+Navigate to the date+meal URL before adding. Each cart is per-slot.
 
-### Finding and Clicking Items
+### Add Item Script
 
 ```javascript
 (async () => {
   const targetName = 'ITEM_NAME_HERE'; // partial match, case-insensitive
-  const items = [...document.querySelectorAll('app-product-menu-item.menu-section-product-item, .new-menu-product-item')];
+  const qty = 1;
+  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
+  const items = [...document.querySelectorAll(SELECTORS)];
   const match = items.find(item => {
     const title = item.querySelector('.product-menu-title');
     return title && title.innerText.toLowerCase().includes(targetName.toLowerCase());
   });
   if (!match) return 'item_not_found';
-  // Two button types: .btn.plus-add (most items) or .product-add-wrapper (items with required options)
   const btn = match.querySelector('.btn.plus-add') || match.querySelector('.product-add-wrapper');
   if (!btn) return 'no_button_found';
-  btn.click();
-  await new Promise(r => setTimeout(r, 1000));
+  for (let i = 0; i < qty; i++) {
+    btn.click();
+    await new Promise(r => setTimeout(r, 600));
+  }
   const modal = document.querySelector('[class*="product-detail-header"]');
-  return modal ? 'modal_opened' : 'added_directly';
+  return modal ? 'modal_opened' : `added_directly_x${qty}`;
 })()
 ```
 
-**If `no_button_found`:** Inspect the item's actual button structure:
+**Quantity > 1:** Click `qty` times (the `+` increments the counter). For items with required-options modals, click "Add to Cart" once, then use the cart's `+` stepper for additional units.
+
+**If `no_button_found`:** Debug:
 ```javascript
 (async () => {
   const items = [...document.querySelectorAll('app-product-menu-item.menu-section-product-item, .new-menu-product-item')];
@@ -313,91 +410,93 @@ Navigate to the correct date+meal URL before adding items. Each date's cart is s
 ### Handling Options Modal
 
 If result is `modal_opened`:
+1. Check `~/Documents/WeBox/items-with-options.md` — if item is cached, use the noted option.
+2. Else: `find("Add to Cart button")` → `computer scroll_to` + `computer left_click`. Default option is accepted.
+3. Complex options (5+ groups, build-your-own): screenshot + model judgment + computer use.
 
-1. Use `find("Add to Cart button")` → get ref
-2. `computer scroll_to` + `computer left_click` on the ref
-3. The first/default option is pre-selected by WeBox — accept unless preferences require otherwise
-
-**Check `~/Documents/WeBox/items-with-options.md`** before clicking: if the item is cached there, use the noted preferred option instead of the default.
-
-**Complex options (5+ choices, poke bowls, build-your-own):**
-- Take a screenshot, use model judgment (computer use) to select reasonable options
-- Then click "Add to Cart"
-
-**After encountering a new item with options**, append to `~/Documents/WeBox/items-with-options.md`:
+Append new items-with-options encounters to `~/Documents/WeBox/items-with-options.md`:
 ```
-- [Brand] [Item Name] — option: "Choose Rice" (single) — default chosen: Purple Rice
+- [Brand] [Item Name] — option: "Choose Rice" (single) — chosen: Purple Rice — date: YYYY-MM-DD
 ```
+Create the file if missing.
 
-### If Item Not Found
+### Item Not Found
 
-1. Try navigating to the item's cuisine category URL and re-scraping
-2. If still not found, substitute with the next best option from the plan
-3. Update the plan-cache entry to reflect the substitution
+1. Try category URL and re-scrape
+2. If still missing, substitute with next-best from plan; note substitution inline in `order-history.md`
+
+---
 
 ## Step 8: Checkout
 
-After all items for one date+meal are in the cart:
+After all items for one slot are added:
 
 1. Open cart (click cart icon top-right)
-2. Use `find("Quick Checkout button")` → `computer scroll_to` + `computer left_click`
-3. Wait for "Thank you for your order" page, note the order number
-4. Update that slot's status in `~/Documents/WeBox/plan-cache.md` to `ordered ✅ #ORDERNUM`
+2. `find("Quick Checkout button")` → `computer scroll_to` + `computer left_click`
+3. Wait for "Thank you for your order" — note the order number
+4. **Immediately** update `~/Documents/WeBox/order-history.md`:
+   - Change `📝 planned` → `✅ #ORDERNUM`
+   - Update total if it differs from planned
 
 ```
 ✅ Order placed! Order #XXXXXXX
-   Mon May 25, Lunch — $XX.XX
+   Mon May 25, Lunch — $28.30
 ```
 
-## Step 9: Repeat for Each Day
+---
 
-Repeat Steps 7–8 for each date+meal in the plan. After all orders are complete, print a summary:
+## Step 9: Repeat for Each Slot
+
+Repeat Steps 7–8 per date+meal. Final summary:
 
 ```
-🎉 All orders placed!
+🎉 All done!
 
-  Mon May 25 Lunch  — $XX.XX  ✅ #XXXXXXX
-  Mon May 25 Dinner — $XX.XX  ✅ #XXXXXXX
-  Tue May 26 Lunch  — $XX.XX  ✅ #XXXXXXX
+  Mon May 25 Lunch  $28.30 ✅ #XXXXXXX
+  Mon May 25 Dinner $20.25 ✅ #XXXXXXX
   ...
 ```
 
-## Step 10: Post-Order Feedback (Optional)
+---
 
-After all orders succeed:
+## Step 10: Post-Order Feedback
 
-1. **Invite reviews** (only if the user hasn't already given feedback in this session):
-   > Orders placed! If you have any feedback on items you've tried recently — ratings, things you loved or want to avoid — just tell me and I'll save them for next time.
+Invite reviews if no feedback was given this session:
+> Done! Any feedback on dishes you've tried — good or bad — just tell me. Free-form is fine: "the Mongolian beef was too dry", "loved the salad", etc.
 
-   If the user responds with feedback, parse it and append to `~/Documents/WeBox/item-reviews.md`.
+Parse any feedback and append to `~/Documents/WeBox/item-reviews.md`. Create the file if missing.
 
-2. **Update preferences** if new dietary or cuisine preferences were inferred from the conversation.
+### Item Review Format
 
-### Item Review File Format
-
-`~/Documents/WeBox/item-reviews.md`:
+Reviews are flexible. Comments can be free-form natural language in any language. Rating is optional.
 
 ```markdown
 # Item Reviews
 
-## [Brand] — [Item Name]
-Rating: X/5
-Tags: favorite | avoid | never-again | love-the-sauce | portion-small | ...
-Notes: [free-text — anything the user said about this item]
-Last ordered: YYYY-MM-DD
+## Xiangchuan Kitchen — Mongolian Beef Bento
+Rating: 5/5
+Tags: favorite, lunch-regular
+Comments:
+- 2026-05-22: Always order this. Amazing.
+- 2026-05-22: Prefer purple rice option.
 
-## [Brand] — [Item Name]
-Rating: X/5
-Notes: ...
+## Northwest China Cuisine — Spicy Hot Pot
+Comments:
+- 2026-05-15: 这个超级咸，肉太少
+- 2026-05-20: 又点了一次，还是咸，不会再点了
+Inferred: hard exclude (consistently negative).
+
+## Ox 9 Lanzhou — Cold Noodles
+Rating: 4/5
+Comments:
+- 2026-05-18: Good but the broth was lukewarm — maybe avoid in winter.
 ```
 
-**Writing reviews:** Users can say anything — Claude parses it:
-- "The Mongolian Beef bento is amazing, always order it" → rating 5/5, tag favorite
-- "The poke bowl was too salty and overpriced, don't order again" → rating 1/5, tag never-again
-- "I liked the Lanzhou noodles but the portion felt small" → rating 3/5, tag portion-small
-- "For the bento with rice, I always prefer purple rice" → option preference note
-
-Append new reviews; update existing entries if the same item is reviewed again (keep last rating, append notes with date).
+When the user gives feedback:
+- New item → append a new `## Brand — Item Name` section
+- Existing item → append a dated comment to its `Comments:` list
+- Don't overwrite past comments; let them stack as a timeline
+- Update rating only if user explicitly gives a number; otherwise infer sentiment in selection logic
 
 ---
 
@@ -405,34 +504,28 @@ Append new reviews; update existing entries if the same item is reviewed again (
 
 | Selector | Purpose |
 |----------|---------|
-| `app-product-menu-item.menu-section-product-item, .new-menu-product-item` | Product card — works on both Favorites page and main menu |
-| `.product-item-content-wrapper` | Content area within product card |
-| `.brand-wrapper` | Brand/restaurant name |
-| `.product-menu-title` | Item name (clean text). Do NOT use parent wrappers — they include rating text |
-| `.product-price` | Price text (e.g., "$17.55") |
-| `.product-menu-new-and-rating-wrapper` | Rating (first line is the score) |
-| `.product-menu-top-sold-out-wrapper` | Sold-out indicator — **always in DOM**; use `getComputedStyle(el).display !== 'none'`, NOT `!!el` |
-| `.btn.plus-add` | Add-to-cart button for most items (DIV element, not `<button>`) |
-| `.product-add-wrapper` | Add-to-cart for items with required options (SPAN); always opens modal |
+| `app-product-menu-item.menu-section-product-item, .new-menu-product-item` | Product card |
+| `.product-item-content-wrapper` | Content area |
+| `.brand-wrapper` | Brand name |
+| `.product-menu-title` | Item name (clean text) |
+| `.product-price` | Price text |
+| `.product-menu-new-and-rating-wrapper` | Rating (first line is score) |
+| `.product-menu-top-sold-out-wrapper` | Sold-out flag — use `getComputedStyle(el).display !== 'none'` |
+| `.btn.plus-add` | Add-to-cart for most items (DIV) |
+| `.product-add-wrapper` | Add-to-cart for items with required options (SPAN, opens modal) |
 | `[class*="product-detail-header"]` | Modal open indicator |
-| `.order-item` | Order history row on `/order/list/normal` |
-
-## Automation vs. Model Judgment
-
-| Action | Method |
-|--------|--------|
-| Scrape menu items | Pure JS |
-| Check existing orders | Pure JS |
-| Add item (no options) | JS click `.btn.plus-add` → `added_directly` |
-| Add item (simple options e.g. "Choose Rice") | JS click → modal → `find("Add to Cart button")` → click |
-| Add item (complex options, 5+ choices) | Screenshot + model judgment + computer use |
-| Quick Checkout | `find("Quick Checkout button")` → `computer scroll_to` + `left_click` |
+| `.order-item` | Row on `/order/list/normal` |
 
 ## Error Handling
 
-- **Item not found:** Substitute with next best option from plan, update cache entry
-- **Sold out at cart time:** Re-scrape that date's menu, pick substitute, update cache
-- **Budget would be exceeded:** Don't add the item; try a cheaper alternative
-- **Modal with unexpected options:** Screenshot and use model judgment
-- **Network error / page not loading:** Wait 2s, retry once; if still failing, log and skip that slot
-- **Outside 7-day window:** Skip silently and note in summary
+| Error | Response |
+|-------|----------|
+| Item not found | Substitute from plan, note in history |
+| Sold out at cart time | Re-scrape date, pick substitute |
+| Budget exceeded | Remove most expensive non-essential, retry |
+| Modal with unexpected options | Screenshot + judgment |
+| Page not loading | Wait 3s, retry once; skip slot if still failing |
+| Outside 7-day window | Skip silently, note in summary |
+| Empty favorites for date | Fall back to category pages (respect category_mode) |
+| Cache file malformed | Treat as missing, re-scrape |
+| New user, no order history | Continue with empty variety state |

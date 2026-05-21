@@ -1,100 +1,125 @@
 ---
 name: webox-calendar
-description: View and sync the local WeBox order calendar. Shows which meal slots are filled or open for this week and next week, syncs from WeBox order history, and maintains a long-term local record. Use when the user asks to see their order calendar, check what's been ordered, or sync their order history.
+description: View and sync the local WeBox order history calendar. Shows which meal slots are filled or open for this week and next week, syncs from WeBox order history, and maintains a long-term local record. Use when the user asks to see their order calendar, check what's been ordered, or sync their order history.
 ---
 
 # WeBox Calendar Skill
 
-Maintains and displays the local WeBox order calendar at `~/Documents/WeBox/order-calendar.md`.
+Displays and syncs `~/Documents/WeBox/order-history.md` — the unified record of all WeBox orders (past, planned, and skipped).
 
-The calendar has two distinct layers:
-- **Long-term storage**: all ordered slots ever recorded, kept in the file indefinitely
-- **Active context window**: only the past 14 days + next 7 days are loaded into working memory — enough for variety tracking and display, without ballooning context
+The file has two layers:
+- **Long-term storage:** all order entries kept indefinitely
+- **Active window:** only entries within `history_window_days` (default 28 = ~3 weeks past + 7-day future window) loaded into context
 
 ---
 
 ## Step 1: Sync from WeBox
 
-Always pull a fresh snapshot from WeBox regardless of cache age — this skill's purpose is to sync.
+This skill always pulls a fresh snapshot regardless of cache age — syncing is its purpose.
 
-Navigate to `https://www.webox.com/order/list/normal` and extract all orders:
+Navigate to `https://www.webox.com/order/list/normal`. Scroll 5–10 times to load history:
 
 ```javascript
 (async () => {
+  for (let i = 0; i < 5; i++) {
+    window.scrollTo(0, document.body.scrollHeight);
+    await new Promise(r => setTimeout(r, 800));
+  }
   const orders = [...document.querySelectorAll('.order-item')].map(o => {
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
     const mealLine = lines.find(l => /Lunch|Dinner|HappyHour|Breakfast/.test(l));
-    // Try to get order number if visible
     const orderNum = lines.find(l => /^#\d+/.test(l) || /Order\s*#\d+/i.test(l));
-    return { date: dateLine, meal: mealLine, orderNum: orderNum || null };
+    const itemLines = lines.filter(l =>
+      l !== dateLine && l !== mealLine && l !== orderNum &&
+      l.length > 3 && !/^\$/.test(l) && !/^(Cancel|View|Reorder|Track)/i.test(l)
+    );
+    return { date: dateLine, meal: mealLine, orderNum: orderNum || null, items: itemLines };
   }).filter(o => o.date && o.meal);
   return JSON.stringify(orders);
 })()
 ```
 
-Also cross-reference with the existing `~/Documents/WeBox/plan-cache.md` to enrich slots with item details where available.
+If the user asks to "sync everything" or "pull all my history", scroll 20+ times to load deeper history.
 
-## Step 2: Update order-calendar.md
+## Step 2: Merge into order-history.md
 
-Read the existing `~/Documents/WeBox/order-calendar.md`. Merge the freshly scraped data:
-- Add any new slots not already in the file
-- Do not remove existing entries (the WeBox order list only shows recent history; older local entries may be correct)
-- Update `last_synced` timestamp
+Read `~/Documents/WeBox/order-history.md`. Merge the fresh scrape:
+- Add slots not already in the file (new orders since last sync)
+- Don't remove existing entries — local entries may have more detail (planned status, substitutions, item-level breakdown) than the scraped snapshot
+- For slots that exist locally as `📝 planned` but now appear as scraped (real orders), update the status to `✅ #ORDERNUM` and keep the local item detail
+- Update `last_synced:` to today
 
-### Calendar File Format
+### Unified File Format
 
 ```markdown
-# WeBox Order Calendar
+# WeBox Order History
 last_synced: YYYY-MM-DD
 
-<!-- Long-term record — do not prune. Only the active window is displayed. -->
+<!-- Long-term record. Recent entries (within history_window_days) are loaded for variety tracking. -->
 
-## YYYY-MM
-- Mon MM/DD Lunch  ✅ #3258578 | Mongolian Beef bento, Tea Egg, Taboulleh Salad
-- Mon MM/DD Dinner ✅ #3258600 | Lanzhou Beef Noodles, Coconut Water
-- Tue MM/DD Lunch  ✅ #3258601
-- Wed MM/DD Lunch  —  (skipped — cutoff passed)
-- Thu MM/DD Lunch  ✅ #3258578
-- Fri MM/DD Lunch  ✅ #3258614 | Mongolian Beef bento, Tea Egg, Taboulleh Salad
-- Fri MM/DD Dinner —  (not ordered)
+## 2026-05
+
+### Mon 05/18 Lunch ✅ #3258400
+- Xiangchuan Kitchen — Mongolian Beef Bento × 1
+- Northwest China Cuisine — Tea Egg × 2
+
+### Mon 05/18 Dinner ✅ #3258411 — $20.50
+- Ox 9 Lanzhou — Sliced Spicy Beef × 1
+- Horizon — Organic Milk × 1
+
+### Tue 05/19 Lunch ✅ #3258450
+- (items not recorded — synced from history without detail)
+
+### Thu 05/21 Lunch ✅ #3258578 — $26.85
+- Xiangchuan Kitchen — Mongolian Beef Bento × 1
+- Northwest China Cuisine — Tea Egg × 2
+- Mediterranean Grill House — Taboulleh Salad × 1
+
+### Fri 05/22 Lunch ✅ #3258614 — $25.85
+
+### Fri 05/22 Dinner 🚫 — not ordered
 ```
 
-Item details come from `plan-cache.md` when available; otherwise just the order number.
+Status icons:
+- `✅` ordered (with order number, total optional)
+- `📝` planned (not yet placed — managed by `webox-order`)
+- `⏰` cutoff passed
+- `🚫` skipped / not ordered
+- `🔒` outside 7-day window
 
 ## Step 3: Display the Active Window
 
-Show a formatted calendar covering **this week and next week** (Mon–Fri only unless the user asked for weekends):
+Show this week and next week (Mon–Fri unless the user asks for weekends):
 
 ```
 📅 WeBox Order Calendar — Week of May 20 & May 27
 
 This week (May 20–24)
-  Mon May 20  Lunch  ✅  Mongolian Beef bento, Tea Egg, Taboulleh Salad
+  Mon May 20  Lunch  ✅  Mongolian Beef bento, Tea Egg ×2, Taboulleh
               Dinner —   not ordered
-  Tue May 21  Lunch  ✅  [items from plan cache or just ✅]
+  Tue May 21  Lunch  ✅
               Dinner —   not ordered
-  Wed May 22  Lunch  ⏰  cutoff passed — not ordered
+  Wed May 22  Lunch  ⏰  cutoff passed
   Thu May 23  Lunch  ✅
-  Fri May 24  Lunch  ✅  Mongolian Beef bento, Tea Egg, Taboulleh Salad
+  Fri May 24  Lunch  ✅  Mongolian Beef bento, Tea Egg ×2, Taboulleh
               Dinner —   not ordered
 
 Next week (May 27–31)
   Mon May 27  Lunch  ○   available
               Dinner ○   available
   Tue May 28  Lunch  ○   available
-  ...         ...    ...
-  [7-day window limit: orders beyond this date are not yet possible]
+  ...
+  Fri May 31  ○ ○        (last day in 7-day window)
 ```
 
-Legend:  ✅ ordered  ○ open  ⏰ cutoff passed  — not ordered  🔒 outside 7-day window
+Legend:  ✅ ordered  📝 planned  ○ open  ⏰ cutoff passed  🚫 skipped  🔒 outside window  — not ordered
 
-## Step 4: Summarize
-
-After the calendar display, print a one-line summary:
+## Step 4: Summary + Offer
 
 ```
-This week: 5/10 slots ordered. Next week: 0/10 slots ordered — 7 open within the 7-day window.
+This week: 5/10 slots ordered.
+Next week: 0/10 slots ordered — 7 open within the 7-day window.
 ```
 
 If any open slots are within the 7-day ordering window, offer:
@@ -102,6 +127,10 @@ If any open slots are within the 7-day ordering window, offer:
 Want me to order the remaining open slots? Just say which days or meals.
 ```
 
+---
+
 ## Context Window Discipline
 
-When reading `order-calendar.md` for use by the `webox-order` skill (variety tracking), load only the entries from the past `avoid_repeat_days` days (default: 3). Do not load the full long-term history into context — it's there for the record, not for active reasoning.
+When `webox-order` reads this file for variety tracking, load only entries within `history_window_days` (default 28). Older entries stay in the file but are not loaded — they're the long-term record.
+
+For `webox-calendar`'s own display, only the active week + next week is shown by default. The user can ask for a broader view ("show me last month") and the skill loads correspondingly more.

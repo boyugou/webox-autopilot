@@ -91,12 +91,16 @@ last_updated: YYYY-MM-DD
 
 ## Step 6: Surface Relevant Insights (Optional)
 
-After syncing, if `item-reviews.md` exists, cross-reference:
-- Any newly-hearted items that the user has already reviewed → note their rating
-- Any highly-rated items (`item-reviews.md` 4–5/5) that are NOT in favorites → suggest hearting them for better recommendations
+After syncing, if `~/Documents/WeBox/item-reviews.md` exists, cross-reference:
+- Any newly-hearted items that the user has already reviewed → note their rating/comments
+- Any highly-rated items (4–5/5 or with strongly positive comments) that are NOT in favorites → suggest hearting them for better recommendations
+- Any items with negative reviews still in favorites → suggest unhearting them on WeBox
 
-Example:
+Examples:
 ```
 💡 You rated "Ox 9 Lanzhou — Sliced Spicy Beef" 5/5 but it's not in your favorites.
-   Consider hearting it on WeBox so it shows up in future recommendations.
+   Consider hearting it on WeBox for better future recommendations.
+
+⚠️ "Spicy Hot Pot" is still in your favorites, but you commented "超级咸，肉太少" last week.
+   Consider un-hearting it on WeBox.
 ```
