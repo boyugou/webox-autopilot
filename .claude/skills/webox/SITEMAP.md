@@ -41,9 +41,13 @@ const productById = new Map(products.map(p => [p.id, p]));
 const brandById = new Map(productBrands.map(b => [b.id, b]));
 const items = lunchSpecials.filter(s => s.stockStatus !== 'outofstock').map(s => {
   const p = productById.get(s.productId); if (!p) return null;
+  // portionId source: product.extPortions (NOT lunchSpecials). Default portion preferred.
+  const portion = (p.extPortions || []).find(x => x.isDefault) || (p.extPortions || [])[0];
   return {
-    productSpecialId: s.id, productId: p.id, portionId: s.portionId,
-    cutoffTime: s.cutoffTime, shippingTimeSectionId: s.shippingTimeSectionId, kitchenId: s.kitchenId,
+    productSpecialId: s.id,                // from specials entry
+    productId: p.id,
+    portionId: portion?.id || null,        // from product.extPortions
+    kitchenId: s.kitchenId,
     name: p.extName?.enUs,
     brand: brandById.get(p.brandId)?.extName?.enUs,
     price: s.price,
@@ -52,6 +56,8 @@ const items = lunchSpecials.filter(s => s.stockStatus !== 'outofstock').map(s =>
     dietary: { glutenFree: p.glutenFree, dairyFree: p.dairyFree, halal: p.halalCertified, nutFree: p.nutFree, vegan: p.veggieLevel === 'Vegan' }
   };
 }).filter(Boolean);
+// NOTE: shippingTimeSectionId and cutoffTime are NOT on lunchSpecials entries —
+// they come from past orders' extShippingTimeSection (cached separately).
 ```
 
 One call ≈ 1 second, full menu. No scrolling, no virtualization.
