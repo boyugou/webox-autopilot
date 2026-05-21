@@ -31,25 +31,62 @@ If not logged in: ask user to log in. If `address-info.json` is missing locally:
 
 ---
 
-## Step 2: Refresh Favorites + Hidden Lists
+## Step 2: Refresh Favorites + Hidden Lists (with enrichment)
 
-These change when the user hearts/un-hearts or "Not Interested"-s items in WeBox UI. Quick refresh:
+Refreshing requires the current menu's `products` array to resolve IDs → human-readable names. The warm-cache step (Step 4) fetches the menu anyway, so do these together. Order: menu fetch first, then enrich + diff.
 
 ```javascript
-(async () => {
-  const [fav, hide] = await Promise.all([
+(async (addrId, date) => {
+  const [menuR, favR, hideR] = await Promise.all([
+    fetch(`/api/productSpecials/v8/address/${addrId}/date/${date}`, { credentials: 'include' }).then(r => r.json()),
     fetch('/api/fav/my', { credentials: 'include' }).then(r => r.json()),
     fetch('/api/hide/my', { credentials: 'include' }).then(r => r.json())
   ]);
-  const now = new Date().toISOString();
-  return JSON.stringify({
-    favorites: { productIdList: fav.data?.productIdList || [], brandIdList: fav.data?.brandIdList || [], synced_at: now },
-    hidden:    { productIdList: hide.data?.productIdList || [], brandIdList: hide.data?.brandIdList || [], synced_at: now }
+  if (menuR.code !== 1) return JSON.stringify({ error: 'menu fetch failed', code: menuR.code });
+  const { products, productBrands } = menuR.data;
+  const productById = new Map(products.map(p => [p.id, p]));
+  const brandById = new Map(productBrands.map(b => [b.id, b]));
+  const enrichP = (idList) => {
+    const ps = [], unresolved = [];
+    for (const id of idList || []) {
+      const p = productById.get(id);
+      if (!p) { unresolved.push(id); continue; }
+      ps.push({ id, name: p.extName?.enUs, brand: brandById.get(p.brandId)?.extName?.enUs, category: p.category });
+    }
+    return { products: ps, unresolved };
+  };
+  const enrichB = (idList) => (idList || []).map(id => {
+    const b = brandById.get(id);
+    return b ? { id, name: b.extName?.enUs } : { id, name: null };
   });
-})()
+  const now = new Date().toISOString();
+  const favEn = enrichP(favR.data?.productIdList);
+  const hideEn = enrichP(hideR.data?.productIdList);
+  return JSON.stringify({
+    favorites: { synced_at: now, products: favEn.products, unresolvedProductIds: favEn.unresolved, brands: enrichB(favR.data?.brandIdList) },
+    hidden:    { synced_at: now, products: hideEn.products, unresolvedProductIds: hideEn.unresolved, brands: enrichB(hideR.data?.brandIdList) },
+    menuRaw: menuR.data  // pass through so Step 4 can use the same fetch for warm-cache
+  });
+})('<addrId>', '<tomorrow>')
 ```
 
-**Diff before overwriting.** Read the existing `favorites.json` / `hidden.json`, compute the symmetric diff against the new lists, and surface the changes in the summary (Step 6). Then write the new versions.
+**Diff before overwriting.** Read the existing `favorites.json` / `hidden.json` (compute the set of `products[].id` to compare). Compute symmetric diff against the new ID lists, surface changes in the Step 6 summary:
+- New favorites: products in the new list but not the old → these are recent hearts
+- Removed favorites: products in the old list but not the new → user un-hearted
+
+Then write the new enriched objects to `favorites.json` and `hidden.json`.
+
+**Schema (same as onboard Step 6):**
+```json
+{
+  "synced_at": "ISO-8601",
+  "products": [
+    { "id": 500874, "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "category": "Chinese" }
+  ],
+  "unresolvedProductIds": [202759],
+  "brands": []
+}
+```
 
 ---
 
@@ -149,8 +186,8 @@ Identify the next 1–2 orderable Lunch slots (and corresponding Dinners if with
   const { products, productBrands } = j.data;
   const productById = new Map(products.map(p => [p.id, p]));
   const brandById = new Map(productBrands.map(b => [b.id, b]));
-  const favIds = new Set(/* from favorites.json */);
-  const hideIds = new Set(/* from hidden.json */);
+  const favIds = new Set(/* favorites.json: products.map(p => p.id).concat(unresolvedProductIds) */);
+  const hideIds = new Set(/* hidden.json: products.map(p => p.id).concat(unresolvedProductIds) */);
   let kitchenId = null, shippingTimeSectionId = null;
   const items = specials
     .filter(s => s.stockStatus !== 'outofstock')

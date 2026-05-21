@@ -19,8 +19,8 @@ Read `~/.claude/skills/webox/SITEMAP.md` (full content). It catalogs:
 Also read the four cached identity files if present (the user has presumably run `/webox-onboard`):
 - `~/Documents/WeBox/user-profile.json` → `{firstName, lastName, phone, email, timezone}`
 - `~/Documents/WeBox/address-info.json` → `{addressId, kitchenId, timezone}`
-- `~/Documents/WeBox/favorites.json` → `{productIdList, brandIdList}`
-- `~/Documents/WeBox/hidden.json` → `{productIdList, brandIdList}`
+- `~/Documents/WeBox/favorites.json` → `{products: [{id, name, brand, category}], unresolvedProductIds, brands, synced_at}`
+- `~/Documents/WeBox/hidden.json` → same shape
 
 Plus `~/Documents/WeBox/preferences.md` for the user's preferences.
 

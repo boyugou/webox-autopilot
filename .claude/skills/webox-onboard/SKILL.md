@@ -78,17 +78,15 @@ Say:
 
 ---
 
-## Step 4: Fetch Identity + Favorites + Hidden in One Call
+## Step 4: Fetch Identity + Address Only
 
-After the user replies, run this single JS call on the existing tab to grab everything we need for both Place Order later and the warm-cache filter below:
+After the user replies, fetch identity. The favorites/hidden enrichment happens in Step 6 (after the menu is fetched, so we can enrich IDs → names).
 
 ```javascript
 (async () => {
-  const [profile, addresses, fav, hide] = await Promise.all([
+  const [profile, addresses] = await Promise.all([
     fetch('/api/users/my', { credentials: 'include' }).then(r => r.json()),
-    fetch('/api/v2/userAddresses/my', { credentials: 'include' }).then(r => r.json()),
-    fetch('/api/fav/my', { credentials: 'include' }).then(r => r.json()),
-    fetch('/api/hide/my', { credentials: 'include' }).then(r => r.json())
+    fetch('/api/v2/userAddresses/my', { credentials: 'include' }).then(r => r.json())
   ]);
   const addrs = Array.isArray(addresses.data) ? addresses.data : (addresses.data?.list || []);
   const defaultAddr = addrs.find(a => a.isDefault) || addrs[0] || null;
@@ -107,9 +105,7 @@ After the user replies, run this single JS call on the existing tab to grab ever
       timezone: defaultAddr.timezone,
       address1: defaultAddr.address1,
       city: defaultAddr.city
-    } : null,
-    favorites: { productIdList: fav.data?.productIdList || [], brandIdList: fav.data?.brandIdList || [], synced_at: new Date().toISOString() },
-    hidden: { productIdList: hide.data?.productIdList || [], brandIdList: hide.data?.brandIdList || [], synced_at: new Date().toISOString() }
+    } : null
   });
 })()
 ```
@@ -117,8 +113,6 @@ After the user replies, run this single JS call on the existing tab to grab ever
 Write each field to its own JSON file in `~/Documents/WeBox/`:
 - `user-profile.json` ← `profile`
 - `address-info.json` ← `address`
-- `favorites.json` ← `favorites`
-- `hidden.json` ← `hidden`
 
 If `address` is null (no registered delivery address), stop:
 > You don't have a delivery address set on WeBox yet. Please add one at webox.com first, then run `/webox-onboard` again.
@@ -200,23 +194,66 @@ For each active order, group by `isoWeek(dateShipping)` and write to `~/Document
 
 ---
 
-## Step 6: Fetch Tomorrow's Menu as Warm Cache
+## Step 6: Fetch Menu + Enrich Favorites/Hidden + Build Warm Cache
+
+This step does three things in one menu fetch:
+1. Fetch tomorrow's menu (warm-cache for first order)
+2. Use the same `products` + `productBrands` arrays to resolve favorites/hidden IDs → human-readable {name, brand, category} objects
+3. Write enriched favorites.json, hidden.json, and the warm menu-cache file
 
 ```javascript
 (async () => {
-  // Tomorrow's date in YYYY-MM-DD
   const tmr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
   const addrId = /* from address-info.json */;
-  const favIds = new Set(/* from favorites.json productIdList */);
-  const hideIds = new Set(/* from hidden.json productIdList */);
-  const r = await fetch(`/api/productSpecials/v8/address/${addrId}/date/${tmr}`, { credentials: 'include' });
-  const j = await r.json();
-  if (j.code !== 1) return JSON.stringify({ error: 'menu fetch failed', code: j.code, msg: j.msg });
-  const { lunchSpecials, products, productBrands } = j.data;
+  // Fetch the three things in parallel
+  const [menuR, favR, hideR] = await Promise.all([
+    fetch(`/api/productSpecials/v8/address/${addrId}/date/${tmr}`, { credentials: 'include' }).then(r => r.json()),
+    fetch('/api/fav/my', { credentials: 'include' }).then(r => r.json()),
+    fetch('/api/hide/my', { credentials: 'include' }).then(r => r.json())
+  ]);
+  if (menuR.code !== 1) return JSON.stringify({ error: 'menu fetch failed', code: menuR.code, msg: menuR.msg });
+  const { lunchSpecials, products, productBrands } = menuR.data;
   const productById = new Map(products.map(p => [p.id, p]));
   const brandById = new Map(productBrands.map(b => [b.id, b]));
+  // ENRICH favorites + hidden IDs → human-readable objects
+  const enrichProducts = (idList) => {
+    const products_out = [], unresolved = [];
+    for (const id of idList || []) {
+      const p = productById.get(id);
+      if (!p) { unresolved.push(id); continue; }
+      products_out.push({
+        id,
+        name: p.extName?.enUs,
+        brand: brandById.get(p.brandId)?.extName?.enUs,
+        category: p.category
+      });
+    }
+    return { products: products_out, unresolved };
+  };
+  const enrichBrands = (idList) => (idList || []).map(id => {
+    const b = brandById.get(id);
+    return b ? { id, name: b.extName?.enUs } : { id, name: null };
+  });
+  const favEnriched = enrichProducts(favR.data?.productIdList);
+  const hideEnriched = enrichProducts(hideR.data?.productIdList);
+  const now = new Date().toISOString();
+  const favorites = {
+    synced_at: now,
+    products: favEnriched.products,
+    unresolvedProductIds: favEnriched.unresolved,
+    brands: enrichBrands(favR.data?.brandIdList)
+  };
+  const hidden = {
+    synced_at: now,
+    products: hideEnriched.products,
+    unresolvedProductIds: hideEnriched.unresolved,
+    brands: enrichBrands(hideR.data?.brandIdList)
+  };
+  // Build warm menu cache (using the same products + brands maps)
+  const favIds = new Set(favR.data?.productIdList || []);
+  const hideIds = new Set(hideR.data?.productIdList || []);
   let kitchenId = null, shippingTimeSectionId = null;
-  const items = lunchSpecials
+  const menuItems = lunchSpecials
     .filter(s => s.stockStatus !== 'outofstock')
     .map(s => {
       const p = productById.get(s.productId);
@@ -224,10 +261,7 @@ For each active order, group by `isoWeek(dateShipping)` and write to `~/Document
       kitchenId = kitchenId || s.kitchenId;
       shippingTimeSectionId = shippingTimeSectionId || s.shippingTimeSectionId;
       return {
-        productSpecialId: s.id,
-        productId: p.id,
-        portionId: s.portionId,
-        cutoffTime: s.cutoffTime,
+        productSpecialId: s.id, productId: p.id, portionId: s.portionId, cutoffTime: s.cutoffTime,
         name: p.extName?.enUs,
         brand: brandById.get(p.brandId)?.extName?.enUs,
         price: s.price,
@@ -241,11 +275,31 @@ For each active order, group by `isoWeek(dateShipping)` and write to `~/Document
       };
     })
     .filter(Boolean);
-  return JSON.stringify({ count: items.length, kitchenId, shippingTimeSectionId, items });
+  return JSON.stringify({
+    favorites, hidden,
+    warmCache: { date: tmr, meal: 'Lunch', kitchenId, shippingTimeSectionId, items: menuItems }
+  });
 })()
 ```
 
-Write to `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json`:
+Write three files:
+
+**`~/Documents/WeBox/favorites.json`** ← `favorites`:
+```json
+{
+  "synced_at": "2026-05-21T14:30:00Z",
+  "products": [
+    { "id": 500874, "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "category": "Chinese" },
+    { "id": 496445, "name": "Tea Egg", "brand": "Lee&Bai Chinese Bao Shop", "category": "Chinese" }
+  ],
+  "unresolvedProductIds": [202759, 183709],
+  "brands": []
+}
+```
+
+**`~/Documents/WeBox/hidden.json`** ← `hidden` (same shape as favorites)
+
+**`~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json`** ← warm cache:
 ```json
 {
   "cached_at": "ISO-8601",
@@ -256,6 +310,10 @@ Write to `~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json`:
   "items": [ ... ]
 }
 ```
+
+**Why this is human-readable:** the user can open `favorites.json` in Finder and see "Mongolian Beef Bento — Xiangchuan Kitchen" instead of just "500874". The bare ID list is still derivable via `products.map(p => p.id)` for fast Set-based filtering in selection logic.
+
+**Unresolved IDs:** items that were hearted/hidden in the past but are no longer in the current menu (brand rotated out, etc.). Kept as bare IDs in `unresolvedProductIds` so the data isn't lost. If you really want their names later, `POST /api/products` with the ID list resolves them.
 
 ---
 

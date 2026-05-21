@@ -96,7 +96,7 @@ Wipe my WeBox data and start over.
 - `preferences.md` — all settings (budget, diet, cuisines, etc.)
 - `user-profile.json` — `{firstName, lastName, phone, email, timezone}` (needed for Place Order)
 - `address-info.json` — `{addressId, kitchenId, timezone}` (needed for Place Order)
-- `favorites.json` — `{productIdList, brandIdList, synced_at}` (hearted items)
+- `favorites.json` — enriched: `{products: [{id, name, brand, category}], unresolvedProductIds, brands, synced_at}`. Human-readable in Finder.
 - `hidden.json` — same shape ("Not Interested" items)
 - `orders/YYYY-Www.json` — per-ISO-week order history (active orders only)
 - `menu-cache/YYYY-MM-DD-Meal.json` — per-slot menu snapshot (TTL 60 min)

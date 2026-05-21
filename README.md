@@ -175,7 +175,7 @@ All in `~/Documents/WeBox/` — plain text + JSON, edit freely.
 | `preferences.md` | All settings. Created by onboarding, editable forever. |
 | `user-profile.json` | `{firstName, lastName, phone, email, timezone}` — needed for Place Order. |
 | `address-info.json` | `{addressId, kitchenId, timezone}` — needed for Place Order. |
-| `favorites.json` | `{productIdList, brandIdList, synced_at}` — hearted items. |
+| `favorites.json` | Hearted items, enriched: `{products: [{id, name, brand, category}], unresolvedProductIds, brands, synced_at}`. Human-readable in Finder. |
 | `hidden.json` | Same shape — "Not Interested" items. |
 | `orders/YYYY-Www.json` | Per-ISO-week order history (active orders only). |
 | `menu-cache/YYYY-MM-DD-Meal.json` | Per-slot menu snapshot. TTL 60 min, auto-pruned after 24h. |

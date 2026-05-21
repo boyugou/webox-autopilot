@@ -46,8 +46,8 @@ Extract `budget`, `budget_mode`, `validate_budget`, `confirm_before_order`, `def
 ### 1b. Identity caches (JSON)
 - `user-profile.json` → `{firstName, lastName, phone, email, timezone}` (for Place Order body)
 - `address-info.json` → `{addressId, kitchenId, timezone}` (for Place Order body and menu URL)
-- `favorites.json` → `productIdList` Set for in-favorites bias
-- `hidden.json` → `productIdList` Set to filter out items the user marked "Not Interested"
+- `favorites.json` → `{products: [{id, name, brand, category}], unresolvedProductIds: [], brands: [], synced_at}`. Derive the favorite-ID Set in JS: `new Set(favorites.products.map(p => p.id).concat(favorites.unresolvedProductIds))`.
+- `hidden.json` → same shape. Derive the hidden-ID Set similarly.
 
 ### 1c. Item reviews (`item-reviews.md`)
 Heavily injected into Step 4 selection.
@@ -83,8 +83,8 @@ Read `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`. If `cached_at < 60 minut
   const { products, productBrands } = j.data;
   const productById = new Map(products.map(p => [p.id, p]));
   const brandById   = new Map(productBrands.map(b => [b.id, b]));
-  const favIds  = new Set(/* favorites.json productIdList */);
-  const hideIds = new Set(/* hidden.json productIdList */);
+  const favIds  = new Set(/* favorites.json: products.map(p => p.id).concat(unresolvedProductIds) */);
+  const hideIds = new Set(/* hidden.json: products.map(p => p.id).concat(unresolvedProductIds) */);
   let kitchenId = null, shippingTimeSectionId = null;
   const items = specials
     .filter(s => s.stockStatus !== 'outofstock')
