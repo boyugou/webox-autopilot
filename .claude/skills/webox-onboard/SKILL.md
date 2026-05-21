@@ -199,19 +199,50 @@ When the user responds to the onboarding question:
 
 ### 5a. Parse and write preferences
 
-The canonical preferences template is `preferences.md` in the webox-autopilot repo root — read it (or load the cached copy from the repo clone) and write that exact content to `~/Documents/WeBox/preferences.md`, replacing the YAML values with whatever the user actually said in their onboarding reply.
+The canonical preferences template is `preferences.md` in the webox-autopilot repo root — read it (or load the cached copy from the repo clone) and write that exact content to `~/Documents/WeBox/preferences.md`, replacing values **only for fields the user explicitly mentioned**.
 
-If the user did not mention a field, keep the template's default. Put any free-text observations that don't map to a field into the `## Notes` section at the bottom (preserving the template's helper comment above it).
+#### CRITICAL: defaults are sacred
 
-The template includes inline comments explaining each option (e.g., `# spend-up-to | ceiling-only`, the full list of available categories). Preserve these — the file is meant to be human-editable in Finder.
+**For any field the user did not mention, KEEP THE TEMPLATE'S DEFAULT EXACTLY AS-IS.** Do not invent, infer, or "improve" values the user didn't ask for.
 
-Example mappings:
-- "vegetarian" → `restrictions: [vegetarian]`
-- "budget around 25" → `budget: 25.00`
-- "ask me first" → `confirm_before_order: true`
-- "love spicy Thai food" → `preferred_cuisines: [Thai, ...]` + add a `foods_i_like` entry
+- Don't downgrade the default budget because the user "sounds frugal"
+- Don't add cuisines to `cuisines_to_avoid` because the user didn't mention them as preferred
+- Don't switch `confirm_before_order` to `true` because the user seems cautious
+- Don't shrink `history_window_days` because the user didn't ask
+- Don't add `vegetarian` because the user mentioned liking vegetables
+
+The user can always edit the file later or tell Claude to update specific fields. Inferring or guessing creates surprise behavior the user can't trace back to anything they said.
+
+Only change a field if the user clearly named it or named a synonym ("budget" / "spend" / "cap" / "上限" → `budget`; "vegetarian" / "vegan" / "no meat" → `restrictions`; etc.).
+
+The template includes inline comments explaining each option (`# spend-up-to | ceiling-only`, the full categories list, etc.). Preserve these — the file is meant to be human-editable in Finder.
+
+Free-text observations the user volunteered that don't map to any structured field go into the `## Notes` section at the bottom (preserve the template's helper comment above it).
+
+Example mappings (only change explicitly stated fields):
+- "vegetarian" → `restrictions: [vegetarian]` (other dietary fields untouched)
+- "budget around 25" → `budget: 25.00` (budget_mode etc. unchanged)
+- "ask me first" / "confirm before ordering" → `confirm_before_order: true`
+- "love spicy Thai food" → add `Thai` to `preferred_cuisines` IF the user named it; otherwise just append "loves spicy Thai" to `foods_i_like`
 - "no dairy" → `avoid_allergens: [dairy]`
-- "5 milks a week" → leave defaults; note in `## Notes`
+- "5 milks a week" → leave defaults; mention in `## Notes`
+
+#### Summary back to the user
+
+After writing the file, echo only what you CHANGED from defaults — not the whole config. This makes it easy for the user to spot if you misinterpreted anything:
+
+```
+✅ Saved preferences. Changed from defaults:
+  - budget: 25.00 (was 30.00)
+  - restrictions: [vegetarian]
+  - confirm_before_order: true
+Everything else kept default. Edit ~/Documents/WeBox/preferences.md anytime.
+```
+
+If the user didn't mention anything specific, that's fine — say so:
+```
+✅ Saved preferences using all defaults. Edit ~/Documents/WeBox/preferences.md anytime.
+```
 
 ### 5b. Write order-history.md from scraped data
 
