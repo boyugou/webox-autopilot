@@ -1,6 +1,165 @@
 # WeBox Sitemap Reference
 
-Verified URL patterns and DOM behavior. Read this for any new task involving WeBox the agent hasn't seen before.
+Verified API endpoints, URL patterns, and DOM selectors. **Prefer API calls over DOM scraping** wherever possible — APIs are ~10× faster, deterministic, return structured data, and don't fight virtual scrolling.
+
+---
+
+## API Surface (verified 2026-05-21, prefer these)
+
+All endpoints are same-origin `fetch('/api/...', { credentials: 'include' })`. The page's session cookie is automatically attached.
+
+### Identity & address (call once per session, cache result)
+
+| Endpoint | Method | Returns |
+|---|---|---|
+| `/api/users/my` | GET | `{ data: { firstName, lastName, phone, email, timezone, id, ... } }` |
+| `/api/v2/userAddresses/my` | GET | Addresses array — pick the default to get `addressId`, `kitchenId`, `timezone` |
+
+### Menu
+
+```
+GET /api/productSpecials/v8/address/<ADDR_ID>/date/<YYYY-MM-DD>
+```
+
+Returns `{ code: 1, data: { ... } }` containing:
+
+| Field | Shape | Notes |
+|---|---|---|
+| `lunchSpecials` | array (~2000) | Per-slot inventory for Lunch. `{id (productSpecialId), productId, price, regularPrice, stockStatus, portionId, cutoffTime, shippingTimeSectionId, kitchenId}` |
+| `dinnerSpecials` | array (~1300) | Same shape, Dinner |
+| `happyHourSpecials` | array | Same shape, HappyHour |
+| `products` | array (~2400) | Catalog: `{id, brandId, category, extName: {enUs}, averageRating, salesCnt, glutenFree, dairyFree, halalCertified, nutFree, spicyLevel, veggieLevel, ...}` |
+| `productBrands` | array (~100) | `{id, extName: {enUs, zhCn}, ...}` |
+| `categoryList` | array | 27 categories |
+| `soldOutTag` | object | Sold-out info |
+
+**Join for the slot you want:**
+```javascript
+const j = await fetch(`/api/productSpecials/v8/address/${addrId}/date/${date}`, { credentials: 'include' }).then(r => r.json());
+const { lunchSpecials, products, productBrands } = j.data;
+const productById = new Map(products.map(p => [p.id, p]));
+const brandById = new Map(productBrands.map(b => [b.id, b]));
+const items = lunchSpecials.filter(s => s.stockStatus !== 'outofstock').map(s => {
+  const p = productById.get(s.productId); if (!p) return null;
+  return {
+    productSpecialId: s.id, productId: p.id, portionId: s.portionId,
+    cutoffTime: s.cutoffTime, shippingTimeSectionId: s.shippingTimeSectionId, kitchenId: s.kitchenId,
+    name: p.extName?.enUs,
+    brand: brandById.get(p.brandId)?.extName?.enUs,
+    price: s.price,
+    rating: p.averageRating || null,
+    category: p.category,
+    dietary: { glutenFree: p.glutenFree, dairyFree: p.dairyFree, halal: p.halalCertified, nutFree: p.nutFree, vegan: p.veggieLevel === 'Vegan' }
+  };
+}).filter(Boolean);
+```
+
+One call ≈ 1 second, full menu. No scrolling, no virtualization.
+
+### Favorites & hidden ("Not Interested")
+
+| Endpoint | Method | Body / Returns |
+|---|---|---|
+| `/api/fav/my` | GET | `{ data: { productIdList, brandIdList } }` |
+| `/api/hide/my` | GET | Same shape — items the user "Not Interested"-ed |
+| `/api/favProducts/<productId>?client=web` | POST | (no body) — heart a product |
+| `/api/favBrands/<brandId>?client=web` | POST | (no body) — favorite a brand |
+| `/api/userHide/addHide?client=web` | POST | `{ hideType: "Product"\|"Brand", hideId: <id> }` |
+| `/api/userHide/removeHide?client=web` | POST | Same body — undo |
+
+**Bulk operations** (e.g., "hide all sugary drinks"):
+```js
+const sugary = items.filter(i => i.category === 'Drink' && /soda|sweet|cola|sugar/i.test(i.name));
+for (const it of sugary) {
+  await fetch('/api/userHide/addHide?client=web', {
+    method: 'POST', credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hideType: 'Product', hideId: it.productId })
+  });
+}
+```
+
+### Order history (paginated)
+
+```
+GET /api/orders/list?client=web&status=Paid%2CPartialRefunded%2CPlanned%2CUnpaid%2CRefunded%2CCancelled%2COnHold&pageSize=10&pageIndex=N&type=Individual&orderBy=id&desc=true&referenceTypes=GROUP_ORDER_META
+```
+
+Returns `{ code: 1, data: { totalCount, result: [...] } }`. Each `result[i]` has:
+- `order`: top-level meta (`id, status: "Paid"|"Refunded"|"Cancelled"|..., totalCharge, addressId, dateCreated, datePaid, customerId`)
+- `orderPackages[]`: each has `dateShipping (unix ms), timeShipping ("Lunch"|"Dinner"|"HappyHour"), status, extItems[], extRefunds[]`
+- `userPreAuth`: payment info
+
+Filter for `status === "Paid"` to skip cancelled/refunded. Loop pages until you've fetched all `totalCount`. A 400-order history is ~40 calls × ~100ms ≈ 4s total.
+
+### Place Order
+
+```
+POST /api/orders?client=web
+```
+
+Body shape (every value traceable):
+```jsonc
+{
+  "order": {
+    "firstName":  "<from /api/users/my>",
+    "lastName":   "<from /api/users/my>",
+    "phone":      "<from /api/users/my>",
+    "email":      "<from /api/users/my>",
+    "timezone":   "<from /api/v2/userAddresses/my>",
+    "addressId":  240212,    // from /api/v2/userAddresses/my
+    "kitchenId":  12838,     // from same
+    "currency":   "Dollar",
+    "autoSelectCoupon": true
+  },
+  "orderPackages": [{
+    "extItems": [{
+      "productSpecialId": 56813079,   // lunchSpecials[i].id
+      "portionId":        144251,      // lunchSpecials[i].portionId
+      "quantity":         1,
+      "cutoffTime":       1779462000000,
+      "extCartItemId":    "2026-05-22__27274__56813079__144251",  // <date>__<shipSecId>__<specId>__<portionId>
+      "extChildren":      []
+    }],
+    "dateShipping":           1779408000000,   // midnight unix ms of target date
+    "timeShipping":           "Lunch",
+    "shippingTimeSectionId":  27274,            // from lunchSpecials[i].shippingTimeSectionId
+    "kitchenId":              12838,
+    "extCutleryQuantity":     0,
+    "extBaseCutleryQuantity": 1
+  }],
+  "payType":            "Personal",
+  "realTips":           0,
+  "usePersonalWeBucks": true,
+  "hasAddedWeBucks":    false,
+  "suggestPoint":       -596734
+}
+```
+
+Response: `{ code: 1, data: { id: <orderNumber>, ... } }`. The order is placed immediately on success.
+
+### Order modifications (path-templated in bundle; capture-on-action before use)
+
+| Endpoint | Method |
+|---|---|
+| `/api/orders/changeItemQuantity` | POST |
+| `/api/orders/cancel/date/<DATE>/time/<MEAL>` | (verb TBD) |
+| `/api/orders/cancel/<orderId>/package/<pkgId>/item/<itemId>` | (verb TBD) |
+| `/api/orders/refund` | POST |
+
+### Cart state (client-side)
+
+Cart lives in `localStorage.CartService_cartItemArrMap`. Angular owns the UI render. For ordering, you don't need to touch the cart — `POST /api/orders` is a self-contained payload. The cart is just for the user-facing "Add to Cart" → "Place Order" UX flow.
+
+### "Helper" endpoints (called by the page; usually unnecessary for the skill)
+
+`/api/carts/calculateBudgetAvailable` (validation), `/api/orders/taxRate`, `/api/recommend/own/brand/products`, `/api/weBucksAccount/...`, `/api/operation/record/user` (telemetry).
+
+---
+
+## DOM patterns (legacy / fallback)
+
+The DOM patterns below were the primary mechanism in earlier versions. They still work and are useful for: cart UI interactions, debugging, and any case where the API path isn't available. **Prefer API where possible.**
 
 ---
 

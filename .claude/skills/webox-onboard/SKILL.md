@@ -112,18 +112,15 @@ Reusing the same tab avoids the multi-tab permission prompts and the "what are t
 
 #### 4a. Order history scrape (SCRIPT_4A)
 
-The order list page is heavier than menu pages. **Keep scrolls fast (300ms) and capped at 8** to avoid CDP timeouts. Smart-scroll terminates as soon as no new items load:
+Uses **incremental scroll + harvest-while-scrolling**, dedup by orderId. Robust to virtual scrolling (where items at the top unmount as you scroll down) AND additive lazy-load.
 
 ```javascript
 (async () => {
-  await new Promise(r => setTimeout(r, 1500));
-  let lastCount = 0, stable = 0;
-  for (let i = 0; i < 8; i++) {
-    window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 350));
-    const cnt = document.querySelectorAll('.order-item').length;
-    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
-    lastCount = cnt;
+  const SEL = '.order-item';
+  let waited = 0;
+  while (document.querySelectorAll(SEL).length === 0 && waited < 10000) {
+    await new Promise(r => setTimeout(r, 300));
+    waited += 300;
   }
   const now = new Date();
   const toFullDate = (md) => {
@@ -144,32 +141,51 @@ The order list page is heavier than menu pages. **Keep scrolls fast (300ms) and 
     const mon = new Date(jan4); mon.setDate(jan4.getDate() - dow + 1 + (w-1)*7);
     return mon.toISOString().slice(0, 10);
   };
+  const seen = new Set();
   const synced = now.toISOString();
   const weeks = {};
-  for (const o of document.querySelectorAll('.order-item')) {
-    const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
-    if (/refund|cancel/i.test(orderStatus)) continue;
-    const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-    const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
-    const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
-    if (!dateLine || !mealLine) continue;
-    const meal = mealLine.match(/^(Lunch|Dinner|HappyHour)/)[1];
-    const items = [...o.querySelectorAll('.product-item')].map(p => {
-      const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
-      const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-      const desc = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
-      const pl = txt.find(l => /^\$[\d.]+/.test(l));
-      return { name, brand: desc?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim(), price: pl ? parseFloat(pl.slice(1)) : null };
-    }).filter(x => x.name);
-    if (!items.length) continue;
-    const fullDate = toFullDate(dateLine);
-    if (!fullDate) continue;
-    const day = dateLine.split(/\s+/)[0];
-    const wk = isoWeek(fullDate);
-    if (!weeks[wk]) weeks[wk] = { week: wk, week_starts: weekMonday(wk), synced_at: synced, orders: [] };
-    const key = `${fullDate}|${meal}|${items[0].name}`;
-    if (weeks[wk].orders.some(x => `${x.date}|${x.meal}|${x.items[0].name}` === key)) continue;
-    weeks[wk].orders.push({ date: fullDate, day, meal, items });
+  const harvest = () => {
+    for (const o of document.querySelectorAll(SEL)) {
+      const orderId = o.querySelector('.order-id')?.innerText?.trim();
+      if (!orderId || seen.has(orderId)) continue;
+      const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
+      if (/refund|cancel/i.test(orderStatus)) { seen.add(orderId); continue; }
+      const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+      const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
+      const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
+      if (!dateLine || !mealLine) continue;
+      const meal = mealLine.match(/^(Lunch|Dinner|HappyHour)/)[1];
+      const items = [...o.querySelectorAll('.product-item')].map(p => {
+        const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
+        const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+        const desc = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
+        const pl = txt.find(l => /^\$[\d.]+/.test(l));
+        return { name, brand: desc?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim(), price: pl ? parseFloat(pl.slice(1)) : null };
+      }).filter(x => x.name);
+      if (!items.length) continue;
+      const fullDate = toFullDate(dateLine);
+      if (!fullDate) continue;
+      const day = dateLine.split(/\s+/)[0];
+      const wk = isoWeek(fullDate);
+      if (!weeks[wk]) weeks[wk] = { week: wk, week_starts: weekMonday(wk), synced_at: synced, orders: [] };
+      weeks[wk].orders.push({ date: fullDate, day, meal, items });
+      seen.add(orderId);
+    }
+  };
+  harvest();
+  const step = Math.max(window.innerHeight * 0.8, 600);
+  let y = 0;
+  let lastSize = seen.size, stable = 0;
+  for (let i = 0; i < 100; i++) {
+    y += step;
+    window.scrollTo(0, y);
+    await new Promise(r => setTimeout(r, 600));
+    harvest();
+    const atBottom = y >= document.body.scrollHeight - window.innerHeight;
+    if (seen.size === lastSize) {
+      if (++stable >= 5 && atBottom) break;
+    } else { stable = 0; }
+    lastSize = seen.size;
   }
   return JSON.stringify(weeks);
 })()
@@ -213,29 +229,50 @@ https://www.webox.com/menu/section/My%20Favorites?date=<TOMORROW_YYYY-MM-DD>&shi
   if (!urlOk || !headerEl) {
     return JSON.stringify({ error: 'redirected', urlOk, headerFound: !!headerEl, url: location.href, hint: 'Use a later orderable date+meal' });
   }
-  const SELECTORS = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
-  let lastCount = 0, stable = 0;
-  for (let i = 0; i < 12; i++) {
-    window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 350));
-    const cnt = document.querySelectorAll(SELECTORS).length;
-    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
-    lastCount = cnt;
+  const SEL = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
+  let waited = 0;
+  while (document.querySelectorAll(SEL).length === 0 && waited < 10000) {
+    await new Promise(r => setTimeout(r, 300));
+    waited += 300;
   }
-  const items = [...document.querySelectorAll(SELECTORS)].map(item => {
-    const wrapper = item.querySelector('.product-item-content-wrapper');
-    const brand = wrapper?.querySelector('.brand-wrapper')?.innerText?.trim();
-    const name = wrapper?.querySelector('.product-menu-title')?.innerText?.trim();
-    const priceText = wrapper?.querySelector('.product-price')?.innerText?.trim();
-    const price = parseFloat(priceText?.replace('$', '') || '0');
-    const rating = parseFloat(wrapper?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0]) || null;
-    const soldOutEl = item.querySelector('.product-menu-top-sold-out-wrapper');
-    const soldOut = soldOutEl ? getComputedStyle(soldOutEl).display !== 'none' : false;
-    return { brand, name, price, priceText, rating, soldOut };
-  }).filter(i => i.name);
-  // Sanity guard: favorites typically returns 10-200 items. If 200+, redirect probably happened but URL check missed.
-  if (items.length > 250) {
-    return JSON.stringify({ error: 'suspect_redirect', count: items.length, hint: 'Try a later date' });
+  // Harvest-while-scrolling: dedup by (brand, name) to handle virtual scrolling
+  // (where the page mounts/unmounts items as you scroll) AND additive lazy-load.
+  const collected = new Map();
+  const harvest = () => {
+    for (const el of document.querySelectorAll(SEL)) {
+      const soldOutEl = el.querySelector('.product-menu-top-sold-out-wrapper');
+      if (soldOutEl && getComputedStyle(soldOutEl).display !== 'none') continue;
+      const w = el.querySelector('.product-item-content-wrapper');
+      const name = w?.querySelector('.product-menu-title')?.innerText?.trim();
+      if (!name) continue;
+      const brand = w?.querySelector('.brand-wrapper')?.innerText?.trim();
+      const key = `${brand}|${name}`;
+      if (collected.has(key)) continue;
+      const rating = parseFloat(w?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0]) || null;
+      const price = parseFloat(w?.querySelector('.product-price')?.innerText?.trim().replace('$', '') || '0');
+      const item = { name, brand, price };
+      if (rating !== null) item.rating = rating;
+      collected.set(key, item);
+    }
+  };
+  harvest();
+  const step = Math.max(window.innerHeight * 0.8, 600);
+  let y = 0;
+  let lastSize = collected.size, stable = 0;
+  for (let i = 0; i < 80; i++) {
+    y += step;
+    window.scrollTo(0, y);
+    await new Promise(r => setTimeout(r, 600));
+    harvest();
+    const atBottom = y >= document.body.scrollHeight - window.innerHeight;
+    if (collected.size === lastSize) {
+      if (++stable >= 5 && atBottom) break;
+    } else { stable = 0; }
+    lastSize = collected.size;
+  }
+  const items = [...collected.values()];
+  if (items.length > 600) {
+    return JSON.stringify({ error: 'suspect_too_many', count: items.length });
   }
   return JSON.stringify({ items });
 })()

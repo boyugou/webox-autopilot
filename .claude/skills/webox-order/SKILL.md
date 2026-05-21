@@ -93,16 +93,14 @@ Navigate to `https://www.webox.com/order/list/normal` and run the scraper below.
 
 ```javascript
 (async () => {
-  await new Promise(r => setTimeout(r, 1500));
-  let lastCount = 0, stable = 0;
-  for (let i = 0; i < 8; i++) {
-    window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 350));
-    const cnt = document.querySelectorAll('.order-item').length;
-    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
-    lastCount = cnt;
+  // Wait for first .order-item to render (up to 10s)
+  const SEL = '.order-item';
+  let waited = 0;
+  while (document.querySelectorAll(SEL).length === 0 && waited < 10000) {
+    await new Promise(r => setTimeout(r, 300));
+    waited += 300;
   }
-  // Helpers — ISO date + ISO week
+  // Helpers
   const now = new Date();
   const toFullDate = (md) => {
     const m = md.match(/(\d{2})\/(\d{2})/); if (!m) return null;
@@ -122,34 +120,55 @@ Navigate to `https://www.webox.com/order/list/normal` and run the scraper below.
     const mon = new Date(jan4); mon.setDate(jan4.getDate() - dow + 1 + (w-1)*7);
     return mon.toISOString().slice(0, 10);
   };
-  // Scrape + filter to active orders only, group by ISO week
+  // Harvest-while-scrolling: dedup by orderId so we capture every order even if the
+  // page virtualizes (mounts/unmounts items as you scroll). seen set prevents reprocessing.
+  const seen = new Set();
   const synced = now.toISOString();
   const weeks = {};
-  for (const o of document.querySelectorAll('.order-item')) {
-    const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
-    if (/refund|cancel/i.test(orderStatus)) continue;
-    const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-    const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
-    const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
-    if (!dateLine || !mealLine) continue;
-    const meal = mealLine.match(/^(Lunch|Dinner|HappyHour)/)[1];
-    const items = [...o.querySelectorAll('.product-item')].map(p => {
-      const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
-      const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
-      const desc = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
-      const pl = txt.find(l => /^\$[\d.]+/.test(l));
-      return { name, brand: desc?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim(), price: pl ? parseFloat(pl.slice(1)) : null };
-    }).filter(x => x.name);
-    if (!items.length) continue;
-    const fullDate = toFullDate(dateLine);
-    if (!fullDate) continue;
-    const day = dateLine.split(/\s+/)[0];
-    const wk = isoWeek(fullDate);
-    if (!weeks[wk]) weeks[wk] = { week: wk, week_starts: weekMonday(wk), synced_at: synced, orders: [] };
-    // Skip duplicates within this scrape (same date+meal+first item name)
-    const key = `${fullDate}|${meal}|${items[0].name}`;
-    if (weeks[wk].orders.some(x => `${x.date}|${x.meal}|${x.items[0].name}` === key)) continue;
-    weeks[wk].orders.push({ date: fullDate, day, meal, items });
+  const harvest = () => {
+    for (const o of document.querySelectorAll(SEL)) {
+      const orderId = o.querySelector('.order-id')?.innerText?.trim();
+      if (!orderId || seen.has(orderId)) continue;
+      const orderStatus = o.querySelector('.order-status')?.innerText?.trim() || 'Paid';
+      if (/refund|cancel/i.test(orderStatus)) { seen.add(orderId); continue; }
+      const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+      const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
+      const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
+      if (!dateLine || !mealLine) return;
+      const meal = mealLine.match(/^(Lunch|Dinner|HappyHour)/)[1];
+      const items = [...o.querySelectorAll('.product-item')].map(p => {
+        const name = p.querySelector('[class*="item-name"]')?.innerText?.trim();
+        const txt = p.innerText.split('\n').map(l => l.trim()).filter(Boolean);
+        const desc = txt.find(l => l !== name && !/^\$/.test(l) && !/^(Refunded|Paid|Delivered|Request Refund)$/i.test(l));
+        const pl = txt.find(l => /^\$[\d.]+/.test(l));
+        return { name, brand: desc?.split(',')[0]?.replace(/^Cold\s*·\s*/, '').trim(), price: pl ? parseFloat(pl.slice(1)) : null };
+      }).filter(x => x.name);
+      if (!items.length) continue;
+      const fullDate = toFullDate(dateLine);
+      if (!fullDate) continue;
+      const day = dateLine.split(/\s+/)[0];
+      const wk = isoWeek(fullDate);
+      if (!weeks[wk]) weeks[wk] = { week: wk, week_starts: weekMonday(wk), synced_at: synced, orders: [] };
+      weeks[wk].orders.push({ date: fullDate, day, meal, items });
+      seen.add(orderId);
+    }
+  };
+  harvest();
+  // Incremental scroll — ~80% viewport per step so each row passes through view and
+  // triggers lazy-load. Jumping to scrollHeight can skip intermediate items entirely.
+  const step = Math.max(window.innerHeight * 0.8, 600);
+  let y = 0;
+  let lastSize = seen.size, stable = 0;
+  for (let i = 0; i < 100; i++) {
+    y += step;
+    window.scrollTo(0, y);
+    await new Promise(r => setTimeout(r, 600));
+    harvest();
+    const atBottom = y >= document.body.scrollHeight - window.innerHeight;
+    if (seen.size === lastSize) {
+      if (++stable >= 5 && atBottom) break;
+    } else { stable = 0; }
+    lastSize = seen.size;
   }
   return JSON.stringify(weeks);
 })()
@@ -219,25 +238,50 @@ For each source (favorites + each category):
     }
   }
   const SEL = 'app-product-menu-item.menu-section-product-item, .new-menu-product-item';
-  let lastCount = 0, stable = 0;
-  for (let i = 0; i < 12; i++) {
-    window.scrollTo(0, document.body.scrollHeight);
-    await new Promise(r => setTimeout(r, 350));
-    const cnt = document.querySelectorAll(SEL).length;
-    if (cnt === lastCount) { if (++stable >= 2) break; } else { stable = 0; }
-    lastCount = cnt;
+  // Wait for first render
+  let waited = 0;
+  while (document.querySelectorAll(SEL).length === 0 && waited < 10000) {
+    await new Promise(r => setTimeout(r, 300));
+    waited += 300;
   }
-  const items = [...document.querySelectorAll(SEL)].map(item => {
-    const w = item.querySelector('.product-item-content-wrapper');
-    const brand = w?.querySelector('.brand-wrapper')?.innerText?.trim();
-    const name = w?.querySelector('.product-menu-title')?.innerText?.trim();
-    const priceText = w?.querySelector('.product-price')?.innerText?.trim();
-    const price = parseFloat(priceText?.replace('$', '') || '0');
-    const rating = parseFloat(w?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0]) || null;
-    const soldOutEl = item.querySelector('.product-menu-top-sold-out-wrapper');
-    const soldOut = soldOutEl ? getComputedStyle(soldOutEl).display !== 'none' : false;
-    return { brand, name, price, priceText, rating, soldOut };
-  }).filter(i => i.name && !i.soldOut);
+  // Harvest-while-scrolling: dedup by (brand, name) so we capture every item across
+  // the journey even if the page virtualizes (mounts/unmounts items as you scroll).
+  // Jumping to scrollHeight can skip intermediate items entirely on classic UI.
+  const collected = new Map();
+  const harvest = () => {
+    for (const el of document.querySelectorAll(SEL)) {
+      const soldOutEl = el.querySelector('.product-menu-top-sold-out-wrapper');
+      if (soldOutEl && getComputedStyle(soldOutEl).display !== 'none') continue;
+      const w = el.querySelector('.product-item-content-wrapper');
+      const name = w?.querySelector('.product-menu-title')?.innerText?.trim();
+      if (!name) continue;
+      const brand = w?.querySelector('.brand-wrapper')?.innerText?.trim();
+      const key = `${brand}|${name}`;
+      if (collected.has(key)) continue;
+      const rating = parseFloat(w?.querySelector('.product-menu-new-and-rating-wrapper')?.innerText?.trim().split('\n')[0]) || null;
+      const price = parseFloat(w?.querySelector('.product-price')?.innerText?.trim().replace('$', '') || '0');
+      const item = { name, brand, price };
+      if (rating !== null) item.rating = rating;
+      collected.set(key, item);
+    }
+  };
+  harvest();
+  // Incremental scroll — ~80% viewport per step so each row passes through view
+  const step = Math.max(window.innerHeight * 0.8, 600);
+  let y = 0;
+  let lastSize = collected.size, stable = 0;
+  for (let i = 0; i < 80; i++) {
+    y += step;
+    window.scrollTo(0, y);
+    await new Promise(r => setTimeout(r, 600));
+    harvest();
+    const atBottom = y >= document.body.scrollHeight - window.innerHeight;
+    if (collected.size === lastSize) {
+      if (++stable >= 5 && atBottom) break;
+    } else { stable = 0; }
+    lastSize = collected.size;
+  }
+  const items = [...collected.values()];
   if (expectFavorites && items.length > 250) {
     return JSON.stringify({ error: 'suspect_redirect', count: items.length });
   }
