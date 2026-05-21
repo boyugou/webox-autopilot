@@ -138,14 +138,15 @@ The order list page is heavier than menu pages. **Keep scrolls fast (300ms) and 
     const orderStatus = o.querySelector('.order-status')?.innerText?.trim();
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
-    const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)$/.test(l));
+    const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
+    const meal = mealLine?.match(/^(Lunch|Dinner|HappyHour)/)?.[1];
     const itemLines = lines.filter(l =>
       l !== dateLine && l !== mealLine && l !== orderId && l !== orderStatus &&
       !/^(Order|Invoice|Details|Reorder|Cancel|View|Track|Total:|Refunded|No\.\d)/i.test(l) &&
       !/^\$/.test(l) && l.length > 3
     );
     const isActive = !orderStatus || !/refund|cancel/i.test(orderStatus);
-    return { date: dateLine, meal: mealLine, orderId, orderStatus: orderStatus || 'active', isActive, items: itemLines };
+    return { date: dateLine, meal, orderId, orderStatus: orderStatus || 'active', isActive, items: itemLines };
   }).filter(o => o.date && o.meal);
   return JSON.stringify(orders);
 })()

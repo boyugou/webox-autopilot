@@ -97,7 +97,8 @@ Navigate to `https://www.webox.com/order/list/normal`. The page uses infinite sc
     // Date and meal aren't in dedicated selectors; extract from text
     const lines = o.innerText.split('\n').map(l => l.trim()).filter(Boolean);
     const dateLine = lines.find(l => /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{2}\/\d{2}$/.test(l));
-    const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)$/.test(l));
+    const mealLine = lines.find(l => /^(Lunch|Dinner|HappyHour)(\s|\(|$)/.test(l));
+    const meal = mealLine?.match(/^(Lunch|Dinner|HappyHour)/)?.[1];
     // Item lines: skip metadata / descriptions / prices / refund flags
     const itemLines = lines.filter(l =>
       l !== dateLine && l !== mealLine && l !== orderId && l !== orderStatus &&
@@ -106,7 +107,7 @@ Navigate to `https://www.webox.com/order/list/normal`. The page uses infinite sc
     );
     // active = the slot is taken; refunded/cancelled slots are open for re-ordering
     const isActive = !orderStatus || !/refund|cancel/i.test(orderStatus);
-    return { date: dateLine, meal: mealLine, orderId, orderStatus: orderStatus || 'active', isActive, items: itemLines };
+    return { date: dateLine, meal, orderId, orderStatus: orderStatus || 'active', isActive, items: itemLines };
   }).filter(o => o.date && o.meal);
   return JSON.stringify(orders);
 })()
