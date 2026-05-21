@@ -93,7 +93,8 @@ Wipe my WeBox data and start over.
 ### User data
 
 `~/Documents/WeBox/` (visible in Finder, plain text + JSON, edit freely):
-- `preferences.md` — all settings (budget, diet, cuisines, etc.)
+- `config.yaml` — schema-locked structured settings (budget, restrictions, cuisines, etc.). Edit values, never add fields.
+- `preferences.md` — free-form notes (soft constraints — anything that doesn't fit `config.yaml`)
 - `user-profile.json` — `{firstName, lastName, phone, email, timezone}` (needed for Place Order)
 - `address-info.json` — `{addressId, userAddressId, kitchenId, timezone, ...}` (needed for Place Order). `addressId` is the canonical address record; `userAddressId` is your account's link to it (distinct).
 - `shipping-windows.json` — `{windows: {Lunch: {shippingTimeSectionId, extFormCutoff, ...}, Dinner: {...}}}`. Per-meal constants derived from past orders. Required for Place Order body.

@@ -1,0 +1,50 @@
+# WeBox config — schema-locked structured settings.
+#
+# Edit values freely, but DO NOT add new top-level keys. Downstream skills
+# (webox-order, webox-favorite, webox-sync) only read these specific fields.
+# For anything that doesn't fit a field here, see preferences.md alongside.
+#
+# To update interactively: "Update my WeBox config: budget 25, no boba."
+
+# ────────── Budget ──────────
+budget: 30.00
+budget_mode: spend-up-to    # spend-up-to (default — fill the budget with variety) | ceiling-only (best picks, no fill)
+validate_budget: false       # true → run a Python sum × qty check before each order
+
+# ────────── Ordering behavior ──────────
+confirm_before_order: false  # false → auto-order in one shot | true → show plan first, wait for OK
+default_meals: [Lunch, Dinner]
+skip_weekends: true          # multi-day ranges skip Sat/Sun
+
+# ────────── Variety ──────────
+avoid_repeat_days: 7         # don't re-order the same MAIN within this many days
+history_window_days: 28      # how many days of order history to load into context
+
+# Fillers exempt from variety rules — these can repeat freely (5 milks, daily tea egg, etc.)
+allow_repeat_categories: [Drink, Side, Snack, Dairy & Eggs, Produce]
+allow_repeat_patterns:       # case-insensitive substring match on item name
+  - milk
+  - water
+  - tea egg
+  - sparkling
+  - coconut
+  - juice
+
+# ────────── Diet & allergens ──────────
+restrictions: []             # vegetarian | vegan | gluten-free | halal | kosher | pescatarian
+avoid_allergens: []          # nuts | shellfish | dairy | eggs | soy | wheat | sesame
+
+# ────────── Cuisines ──────────
+preferred_cuisines: [Chinese, Japanese]
+cuisines_to_avoid: []
+
+# ────────── Food likes / avoids ──────────
+# Free-text patterns matched against item name. Add anything specific:
+#   foods_to_avoid: [boba, sashimi, salmon raw, deep fried, very oily, yogurt]
+foods_i_like: []
+foods_to_avoid: []
+
+# ────────── Drinks ──────────
+order_drinks: true
+avoid_sugary_drinks: false   # set true to skip sodas, sweetened tea, boba
+preferred_drinks: [water, unsweetened tea]

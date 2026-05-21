@@ -33,8 +33,8 @@ tabs_context_mcp({ createIfEmpty: true })
 ```
 Capture the `tabId`. Navigate it to `https://www.webox.com` (login probe). Verify `a.cart.fr` exists.
 
-Check that **all four identity files** exist in `~/Documents/WeBox/`:
-- `preferences.md` · `user-profile.json` · `address-info.json` · `favorites.json`
+Check that all identity files exist in `~/Documents/WeBox/`:
+- `config.yaml` · `user-profile.json` · `address-info.json` · `favorites.json`
 
 If any is missing:
 > You haven't set up WeBox yet. Run `/webox-onboard` first — takes about 2 minutes.
@@ -43,8 +43,11 @@ If any is missing:
 
 ## Step 1: Load Local State
 
-### 1a. Preferences (`preferences.md`)
-Extract `budget`, `budget_mode`, `validate_budget`, `confirm_before_order`, `default_meals`, `skip_weekends`, `avoid_repeat_days` (default 7), `history_window_days` (default 28), `allow_repeat_categories`, `allow_repeat_patterns`, dietary restrictions, allergens, preferred/avoided cuisines, food likes/dislikes, drink preferences.
+### 1a. Structured config (`config.yaml`)
+Parse the YAML. Extract: `budget`, `budget_mode`, `validate_budget`, `confirm_before_order`, `default_meals`, `skip_weekends`, `avoid_repeat_days` (default 7), `history_window_days` (default 28), `allow_repeat_categories`, `allow_repeat_patterns`, `restrictions`, `avoid_allergens`, `preferred_cuisines`, `cuisines_to_avoid`, `foods_i_like`, `foods_to_avoid`, `order_drinks`, `avoid_sugary_drinks`, `preferred_drinks`. These are **hard constraints** (the planner must respect them).
+
+### 1a'. Free-form preferences (`preferences.md`)
+Read the markdown file. Treat any bullets / paragraphs the user has written as **soft constraints** (good intent to honor where possible). The structured fields in `config.yaml` always override `preferences.md` if there's a conflict.
 
 ### 1b. Identity caches (JSON)
 - `user-profile.json` → `{firstName, lastName, phone, email, timezone}` (for Place Order body)

@@ -118,7 +118,10 @@ Stop ordering Korean food for a while.
 
 ## Configuration Reference
 
-All settings live in `~/Documents/WeBox/preferences.md` (visible in Finder — edit anytime).
+Settings live in two files in `~/Documents/WeBox/` (visible in Finder — edit anytime):
+
+- **`config.yaml`** — schema-locked structured fields documented in the tables below. **Edit values; never add new fields** — downstream skills only read the canonical keys.
+- **`preferences.md`** — free-form notes. Anything that doesn't fit a structured field above: meal composition rules ("1 main + sides"), portion hints ("not a big eater"), ratios ("5/10 Chinese"), incident notes. Claude reads this as a soft constraint.
 
 ### Budget
 
@@ -172,7 +175,7 @@ All in `~/Documents/WeBox/` — plain text + JSON, edit freely.
 
 | File | Purpose |
 |---|---|
-| `preferences.md` | All settings. Created by onboarding, editable forever. |
+| `preferences.md` | Free-form notes (soft constraints — anything that doesn't fit `config.yaml`). Created by onboarding, editable forever. |
 | `user-profile.json` | `{firstName, lastName, phone, email, timezone}` — needed for Place Order. |
 | `address-info.json` | `{addressId, userAddressId, kitchenId, timezone, ...}` — needed for Place Order. `addressId` is the canonical address record (e.g., 240212); `userAddressId` is your account's link (e.g., 459170). Distinct concepts. |
 | `shipping-windows.json` | Per-meal constants (`shippingTimeSectionId`, `extFormCutoff`) derived from past orders. Required for Place Order body assembly. |

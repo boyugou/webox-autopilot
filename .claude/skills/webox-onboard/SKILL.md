@@ -11,15 +11,15 @@ First-time setup. Populates `~/Documents/WeBox/` with everything subsequent skil
 
 ## What gets created
 
-- `preferences.md` — your settings (from your onboarding answer)
+- `config.yaml` — schema-locked structured settings (budget, restrictions, cuisines, etc.). Edit values, never add fields.
+- `preferences.md` — free-form notes: anything that doesn't fit a structured field
 - `user-profile.json` — `{firstName, lastName, phone, email, timezone, id}` (required for Place Order)
 - `address-info.json` — `{addressId, userAddressId, kitchenId, timezone, address1, city, ...}` (required for Place Order)
 - `shipping-windows.json` — per-meal `{shippingTimeSectionId, extFormCutoff, ...}` derived from past orders (required for Place Order body)
 - `favorites.json` — enriched `{products: [{id, name, brand, category}], unresolvedProductIds, brands, synced_at}`
 - `hidden.json` — same shape ("Not Interested" items)
 - `orders/YYYY-Www.json` — per-ISO-week order history (active orders only)
-- `menu-cache/<TOMORROW>-Lunch.json` — warm cache for the first order
-- `item-reviews.md` — empty stub
+- `item-reviews.md` — empty stub (`menu-cache/` is populated lazily on first order, not at onboard)
 
 ### Different users / addresses
 
@@ -64,9 +64,10 @@ mkdir -p ~/Documents/WeBox/orders ~/Documents/WeBox/menu-cache
 
 ## Step 2: Detect First-Run vs Returning User
 
-Already onboarded if **both** files exist:
-- `~/Documents/WeBox/preferences.md`
+Already onboarded if all of these exist:
+- `~/Documents/WeBox/config.yaml`
 - `~/Documents/WeBox/user-profile.json`
+- `~/Documents/WeBox/address-info.json`
 
 **If already onboarded:**
 > You're already set up. What would you like to do?
@@ -447,83 +448,83 @@ Items the user hearted (or hid) in the past but that no longer appear in the cur
 
 ## Step 7: Write Preferences + Reviews Stub, Print Summary
 
-### 7a. Parse and write preferences
+### 7a. Write two files: `config.yaml` (schema-locked) + `preferences.md` (free-form)
 
-The canonical template is `~/.claude/skills/webox-onboard/preferences.md` (installed alongside this skill, or fetch it from the webox-autopilot repo root). **You MUST copy the template verbatim, then change ONLY the values of the existing fields.** Do not invent new fields. Do not rename existing fields. Do not change the structure.
+WeBox settings live in TWO files. This separation is deliberate:
 
-#### CRITICAL: schema is fixed
+- **`~/Documents/WeBox/config.yaml`** — structured fields with a fixed schema. Downstream skills (`webox-order` etc.) only read these specific keys. **You may NOT invent new keys here.** Edit values; never rename or add fields.
+- **`~/Documents/WeBox/preferences.md`** — free-form markdown. Anything goes — meal composition rules, "5/10 Chinese", "prefer purple rice", incident notes. Downstream skills read this as a soft hint and apply it on a best-effort basis.
 
-**Bad agent behavior we have seen and must not repeat:** previous runs produced files with fabricated fields like `target_per_meal`, `soft_cap`, `strictly_avoid`, `prefer_instead`, `chinese_target_per_week`, `per_meal_structure`. **None of these exist in the schema.** They look reasonable but they break every downstream skill that reads `preferences.md` and expects the canonical field names.
+This gives you safety (config can't drift off-schema) and freedom (notes can capture anything).
 
-The complete set of allowed top-level keys (all from the template — no others):
-- `budget`, `budget_mode`, `validate_budget`
-- `confirm_before_order`, `default_meals`, `skip_weekends`
-- `avoid_repeat_days`, `history_window_days`, `allow_repeat_categories`, `allow_repeat_patterns`
-- `category_mode`, `category_list`
-- `restrictions`
-- `avoid_allergens`
-- `preferred_cuisines`, `cuisines_to_avoid`
-- `foods_i_like`, `foods_to_avoid`
-- `order_drinks`, `avoid_sugary_drinks`, `preferred_drinks`
+#### Procedure
 
-**Procedure:**
-1. Read the canonical `preferences.md` template (find it via `find ~/.claude/skills/webox-onboard -name preferences.md -maxdepth 3 -type f` or refetch from the repo).
-2. Write the **complete content** of that file to `~/Documents/WeBox/preferences.md`.
-3. For each value the user explicitly mentioned in their onboarding reply (and ONLY those values), modify in place using the canonical field name.
-4. Anything that doesn't fit a structured field → append as free-text bullets in the `## Notes` section at the bottom.
+1. Read the canonical templates:
+   - `~/.claude/skills/webox-onboard/config.yaml` → the locked schema
+   - `~/.claude/skills/webox-onboard/preferences.md` → the free-form starter
+
+2. Write `~/Documents/WeBox/config.yaml` as a **verbatim copy** of the template, then modify ONLY the values of existing keys per the user's onboarding reply. No new keys. No renames.
+
+3. Write `~/Documents/WeBox/preferences.md` starting from the template, then add the user's free-text intent as bullets. Anything that doesn't map cleanly to a structured `config.yaml` field belongs here.
+
+#### CRITICAL: config.yaml schema is fixed
+
+**Bad agent behavior we have seen and must not repeat:** earlier runs produced a preferences file with fabricated keys like `target_per_meal`, `soft_cap`, `strictly_avoid`, `prefer_instead`, `chinese_target_per_week`, `per_meal_structure`. **None of these exist in the schema.** They break every downstream skill that reads the canonical keys.
+
+The complete set of allowed top-level keys in `config.yaml` (from the template — no others):
+`budget`, `budget_mode`, `validate_budget`, `confirm_before_order`, `default_meals`, `skip_weekends`, `avoid_repeat_days`, `history_window_days`, `allow_repeat_categories`, `allow_repeat_patterns`, `restrictions`, `avoid_allergens`, `preferred_cuisines`, `cuisines_to_avoid`, `foods_i_like`, `foods_to_avoid`, `order_drinks`, `avoid_sugary_drinks`, `preferred_drinks`.
 
 #### Defaults are sacred
 
 For any field the user did not mention, keep the template default exactly as-is. Don't infer or "improve":
-- Don't downgrade the default budget because the user "sounds frugal"
-- Don't switch `confirm_before_order` to true because the user seems cautious
-- Don't add `vegetarian` because the user mentioned liking salad
+- Don't downgrade `budget` because the user "sounds frugal"
+- Don't switch `confirm_before_order: true` because they seem cautious
+- Don't add `vegetarian` because they mentioned liking salad
 - Don't shorten `history_window_days`
 
-Only change a field if the user clearly named it or a synonym ("budget"/"spend"/"上限" → `budget`; "vegetarian"/"vegan"/"no meat" → `restrictions`; etc.).
+Only change a value if the user clearly named it or a synonym.
 
-#### Field-mapping cheat sheet
+#### Field-mapping cheat sheet (intent → config.yaml field OR preferences.md note)
 
-When parsing the user's free-text onboarding reply, map their phrases to canonical fields like this — and **never invent a new field even if the existing one feels imperfect**:
-
-| User says (any language) | Canonical field | How to encode |
-|---|---|---|
-| budget / spend / 上限 / 预算 | `budget` | Numeric (e.g., 25.00, 30.00). Cap is always hard — the planner never exceeds it. |
-| "use the full budget" / "尽可能用到满" / "fill up to budget" | `budget_mode: spend-up-to` | This IS the default. Try to fill with appropriate fillers. (`ceiling-only` = best picks within cap, no filling.) |
-| sugary drinks / sodas / 含糖饮料 / 汽水 / 奶茶 / boba | `avoid_sugary_drinks: true` + add patterns to `foods_to_avoid` (e.g., "soda", "boba", "milk tea") |
-| yogurt is no | Add `yogurt` to `foods_to_avoid`. Also remove "yogurt" from `allow_repeat_patterns` if user wants to never see it. |
-| raw fish / sashimi / 生鱼 / 生食 | Add `raw fish`, `sashimi`, `salmon sashimi`, `tuna sashimi`, `ceviche`, `tartare` to `foods_to_avoid` |
-| 健康 / healthy / lean | Add `fried`, `deep-fried`, `heavily oily` to `foods_to_avoid` |
-| 中餐 / Chinese / "at least N Chinese meals" | `preferred_cuisines: [Chinese, ...]`. The "5/10 Chinese" intent goes in `## Notes` (no structured field for ratios). |
-| fresh fruit / milk preferred for filling | Add `fresh fruit`, `milk` to `foods_i_like`. Add `yogurt` to `foods_to_avoid`. |
-| vegetarian / vegan / halal / kosher / gluten-free | `restrictions: [<one or more>]` |
-| nut allergy / shellfish / dairy / eggs | `avoid_allergens: [<allergen>]` |
-| "don't ask, just order" / "no confirmation" / 不用问 | `confirm_before_order: false` (already default) |
-| "show me the plan first" / 让我确认 | `confirm_before_order: true` |
-| "skip weekends" / 不要周末 | `skip_weekends: true` (already default) |
-| "include weekends" / 要周末 | `skip_weekends: false` |
-| 一周吃 N 顿 / portion preferences / 主餐 vs sides | Free-text in `## Notes` (no structured field for meal composition rules) |
-
-Anything that genuinely doesn't fit a structured field goes into `## Notes` as a free-text bullet. The downstream `webox-order` skill reads `## Notes` and applies the intent on a best-effort basis.
+| User says (any language) | Where to encode |
+|---|---|
+| budget / spend / 上限 / 预算 | `config.yaml`: `budget` (numeric). Cap is always hard — planner never exceeds. |
+| "use the full budget" / 尽可能用到满 / "fill up to budget" | `config.yaml`: `budget_mode: spend-up-to` (already default; this is what means "fill the budget"). The alternative `ceiling-only` means best picks without filling. |
+| sugary drinks / sodas / 含糖饮料 / 汽水 / 奶茶 / boba | `config.yaml`: `avoid_sugary_drinks: true` + add patterns ("soda", "boba", "milk tea") to `foods_to_avoid`. |
+| yogurt no | `config.yaml`: add `yogurt` to `foods_to_avoid`. |
+| raw fish / sashimi / 生鱼 / 生食 | `config.yaml`: add `sashimi`, `raw fish`, `ceviche`, `tartare`, `salmon raw`, `tuna raw` to `foods_to_avoid`. |
+| 健康 / healthy / lean / 少油 | `config.yaml`: add `fried`, `deep-fried`, `heavily oily` to `foods_to_avoid`. |
+| 中餐 / Chinese | `config.yaml`: `preferred_cuisines: [Chinese, ...]`. |
+| "at least N Chinese meals per week" | `preferences.md`: free-text bullet — no structured field for ratios. |
+| fresh fruit / milk preferred for filling | `config.yaml`: add `fresh fruit`, `milk` to `foods_i_like`. |
+| vegetarian / vegan / halal / kosher / gluten-free | `config.yaml`: `restrictions: [...]`. |
+| nut / shellfish / dairy / eggs allergy | `config.yaml`: `avoid_allergens: [...]`. |
+| "don't ask, just order" / 不用问 | `config.yaml`: `confirm_before_order: false` (already default). |
+| "show me the plan first" / 让我确认 | `config.yaml`: `confirm_before_order: true`. |
+| "skip weekends" / 不要周末 | `config.yaml`: `skip_weekends: true` (already default). |
+| "include weekends" / 要周末 | `config.yaml`: `skip_weekends: false`. |
+| meal composition (1 main + sides vs big bowl) | `preferences.md`: free-text — no structured field. |
+| portion size hints / "not a big eater" | `preferences.md`: free-text. |
+| anything not covered above | `preferences.md`. |
 
 #### Verification before declaring done
 
-After writing `~/Documents/WeBox/preferences.md`, run:
+After writing `~/Documents/WeBox/config.yaml`, run this schema-check:
 ```bash
 python3 -c "
-import re, sys
-with open('$HOME/Documents/WeBox/preferences.md') as f: text = f.read()
+import re
+with open('$HOME/Documents/WeBox/config.yaml') as f: text = f.read()
 allowed = {'budget','budget_mode','validate_budget','confirm_before_order','default_meals','skip_weekends',
            'avoid_repeat_days','history_window_days','allow_repeat_categories','allow_repeat_patterns',
-           'category_mode','category_list','restrictions','avoid_allergens','preferred_cuisines','cuisines_to_avoid',
+           'restrictions','avoid_allergens','preferred_cuisines','cuisines_to_avoid',
            'foods_i_like','foods_to_avoid','order_drinks','avoid_sugary_drinks','preferred_drinks'}
 keys = set(re.findall(r'^(\w+):', text, re.M))
 extra = keys - allowed
-print('UNKNOWN KEYS:' if extra else 'OK: all keys canonical.', sorted(extra) if extra else '')
+print('UNKNOWN KEYS — REWRITE FROM TEMPLATE:' if extra else 'OK: all keys canonical.', sorted(extra) if extra else '')
 "
 ```
 
-If anything is reported as UNKNOWN, the file is off-schema — rewrite it from the template before finishing.
+If anything is reported UNKNOWN, the file is off-schema — rewrite it from the template before finishing the onboarding.
 
 ### 7b. Create empty item-reviews.md (if missing)
 
@@ -555,11 +556,10 @@ Files in ~/Documents/WeBox/:
   favorites.json           — 131 hearted products
   hidden.json              — 180 "Not Interested" products
   orders/                  — 407 past active orders across N weeks
-  menu-cache/<TOMORROW>.json — X items for tomorrow's Lunch
   item-reviews.md          — empty (grows as you order)
 
 You're ready to order. Try:
-  "Order my lunch for tomorrow"        (curated full menu via webox-order)
+  "Order my lunch for tomorrow"        (full menu via webox-order)
   "Order from my favorites tomorrow"   (narrow scope via webox-favorite)
   "Show my WeBox calendar"             (via webox-sync)
 ```

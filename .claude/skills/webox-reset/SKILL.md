@@ -11,7 +11,6 @@ Files in `~/Documents/WeBox/` that get deleted:
 - `preferences.md`
 - `item-reviews.md`
 - `orders/` (per-week JSON history files)
-- `items-with-options.md`
 - `menu-cache/` (entire directory)
 
 Does NOT touch:
@@ -34,7 +33,6 @@ Then ask:
 >   - preferences.md
 >   - item-reviews.md (X items reviewed)
 >   - orders/ (X weeks of history files — will resync from WeBox)
->   - items-with-options.md
 >   - menu-cache/ (X cached menus)
 >
 > Your WeBox account itself is untouched — only the local files Claude uses.
