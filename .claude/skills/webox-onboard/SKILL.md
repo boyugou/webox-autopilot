@@ -147,69 +147,82 @@ If `address` is null (no registered delivery address), stop:
 
 ## Step 5: Fetch Order History via Paginated API + Derive Shipping Windows
 
-This step does two things from the same fetch:
-1. Build per-week order history files
-2. Build `shipping-windows.json` from `orderPackages[].extShippingTimeSection` — the per-meal `shippingTimeSectionId` and `extFormCutoff` needed for Place Order body assembly later
+The full order history for a long-time user can be 400+ orders × multiple items each. Doing the entire fetch + return-all in one JS call could exceed the tool's practical payload size. Instead: run a single JS call that **accumulates into `window.__weboxOrders` and returns ONLY a summary + the small shipping-windows + the most recent few orders** for the agent to verify. The full data stays on the page object.
 
 ```javascript
 (async () => {
   const params = 'client=web&status=Paid%2CPartialRefunded%2CPlanned%2CUnpaid%2CRefunded%2CCancelled%2COnHold&pageSize=10&type=Individual&orderBy=id&desc=true&referenceTypes=GROUP_ORDER_META';
-  const all = [];
-  let pageIndex = 1;
+  const active = [];
+  const shippingWindows = {};
+  let pageIndex = 1, totalCount = 0;
   while (pageIndex <= 100) {
     const r = await fetch(`/api/orders/list?${params}&pageIndex=${pageIndex}`, { credentials: 'include' });
     const j = await r.json();
     if (j.code !== 1 || !j.data?.result?.length) break;
-    all.push(...j.data.result);
-    if (all.length >= j.data.totalCount) break;
+    totalCount = j.data.totalCount;
+    for (const o of j.data.result) {
+      for (const pkg of (o.orderPackages || [])) {
+        const ts = pkg.timeShipping;
+        const ext = pkg.extShippingTimeSection;
+        if (ext && !shippingWindows[ts]) {
+          shippingWindows[ts] = {
+            shippingTimeSectionId: pkg.shippingTimeSectionId,
+            extFormCutoff: ext.extFormCutoff,
+            daysBefore: ext.daysBefore || 0,
+            extFormShippingBegin: ext.extFormShippingBegin,
+            extFormShippingEnd: ext.extFormShippingEnd,
+            cutoff_local_ms: ext.cutoff,
+            shippingBegin_local_ms: ext.shippingBegin,
+            shippingEnd_local_ms: ext.shippingEnd
+          };
+        }
+        if (o.order?.status !== 'Paid') continue;
+        active.push({
+          orderId: 'No.' + o.order.id,
+          dateShippingMs: pkg.dateShipping,
+          timeShipping: ts,
+          total: o.order.totalCharge || 0,
+          items: (pkg.extItems || []).map(it => ({
+            productId: it.productId,
+            productSpecialId: it.productSpecialId,
+            portionId: it.portionId,
+            quantity: it.quantity,
+            price: (it.pricePerUnitCents ?? it.priceCents ?? 0) / 100
+          }))
+        });
+      }
+    }
+    if (j.data.result.length < 10) break;
     pageIndex++;
   }
-  // Derive shipping-windows map: timeShipping → {shippingTimeSectionId, extFormCutoff, ...}
-  const shippingWindows = {};
-  // Filter to active + flatten the per-package structure
-  const active = [];
-  for (const r of all) {
-    for (const pkg of (r.orderPackages || [])) {
-      const ts = pkg.timeShipping;
-      const ext = pkg.extShippingTimeSection;
-      // Capture shipping window once per meal type (any order suffices)
-      if (ext && !shippingWindows[ts]) {
-        shippingWindows[ts] = {
-          shippingTimeSectionId: pkg.shippingTimeSectionId,
-          extFormCutoff: ext.extFormCutoff,
-          daysBefore: ext.daysBefore || 0,
-          extFormShippingBegin: ext.extFormShippingBegin,
-          extFormShippingEnd: ext.extFormShippingEnd,
-          cutoff_local_ms: ext.cutoff,        // ms-from-local-midnight (e.g., 28800000 = 08:00 local)
-          shippingBegin_local_ms: ext.shippingBegin,
-          shippingEnd_local_ms: ext.shippingEnd
-        };
-      }
-      if (r.order?.status !== 'Paid') continue;
-      const items = (pkg.extItems || []).map(it => ({
-        productId: it.productId,
-        productSpecialId: it.productSpecialId,
-        portionId: it.portionId,
-        quantity: it.quantity,
-        price: (it.pricePerUnitCents ?? it.priceCents ?? 0) / 100
-      }));
-      active.push({
-        orderId: 'No.' + r.order.id,
-        dateShippingMs: pkg.dateShipping,
-        timeShipping: ts,
-        total: r.order.totalCharge || 0,
-        items
-      });
-    }
-  }
+  // Stash the FULL active list on the page so a follow-up call can paginate it back.
+  window.__weboxOrders = active;
+  // Return only a small summary + shipping-windows. The full list is fetched in chunks next.
   return JSON.stringify({
-    totalFetched: all.length,
+    totalCount,
     activeCount: active.length,
+    pagesFetched: pageIndex,
     shippingWindows,
-    orders: active
+    // Just the latest 20 active orders inline — enough to seed orders/YYYY-Www.json for the current week.
+    recentOrders: active.slice(0, 20)
   });
 })()
 ```
+
+**Then write `shipping-windows.json` immediately** (it's small — just two-three meal entries).
+
+**Then paginate `window.__weboxOrders` back in chunks of 50** to build the per-week files. Run this JS as many times as needed:
+
+```javascript
+// Return chunk by offset; agent loops offset += 50 until empty
+(async () => {
+  const offset = /* agent passes 0, 50, 100, ... */;
+  const chunk = (window.__weboxOrders || []).slice(offset, offset + 50);
+  return JSON.stringify({ offset, count: chunk.length, orders: chunk });
+})()
+```
+
+For a user with 400 active orders that's 8 small (~10KB each) round trips, each easily within tool limits. Process each chunk into per-week JSON before the next call.
 
 **Write `~/Documents/WeBox/shipping-windows.json`** with the `shippingWindows` field:
 ```json
@@ -278,95 +291,53 @@ For each active order, group by `isoWeek(dateShipping)` and write to `~/Document
 
 ## Step 6: Fetch Menu + Enrich Favorites/Hidden + Build Warm Cache
 
-This step does three things in one menu fetch:
-1. Fetch tomorrow's menu (warm-cache for first order)
-2. Use the same `products` + `productBrands` arrays to resolve favorites/hidden IDs → human-readable {name, brand, category} objects
-3. Write enriched favorites.json, hidden.json, and the warm menu-cache file
+This step enriches favorites + hidden ID lists into human-readable `{id, name, brand, category}` objects using the menu API's `products` array as a lookup.
+
+> **CRITICAL — about `javascript_tool` return values:**
+> The string returned by `javascript_tool` IS the full payload. You DO NOT need to download it to a file. **Never call URL-blob-download tricks. Never look in `~/Downloads`.** The display in the terminal truncates long results around ~1KB for readability — but the result the JS function returned reaches you in full and you can write it directly with the `Write` tool. If you find yourself wanting to write to `/Users/<x>/Downloads/...` from a JS snippet, stop — you're working around a non-existent limit.
+>
+> If a JS call would genuinely return >100KB, split it into smaller calls instead. This skill's calls are all designed to fit comfortably.
 
 ```javascript
 (async () => {
   const tmr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
   const addrId = /* from address-info.json */;
-  // Fetch the three things in parallel
   const [menuR, favR, hideR] = await Promise.all([
     fetch(`/api/productSpecials/v8/address/${addrId}/date/${tmr}`, { credentials: 'include' }).then(r => r.json()),
     fetch('/api/fav/my', { credentials: 'include' }).then(r => r.json()),
     fetch('/api/hide/my', { credentials: 'include' }).then(r => r.json())
   ]);
   if (menuR.code !== 1) return JSON.stringify({ error: 'menu fetch failed', code: menuR.code, msg: menuR.msg });
-  const { lunchSpecials, products, productBrands } = menuR.data;
+  const { products, productBrands } = menuR.data;
   const productById = new Map(products.map(p => [p.id, p]));
-  const brandById = new Map(productBrands.map(b => [b.id, b]));
-  // ENRICH favorites + hidden IDs → human-readable objects
+  const brandById   = new Map(productBrands.map(b => [b.id, b]));
   const enrichProducts = (idList) => {
-    const products_out = [], unresolved = [];
+    const out = [], unresolved = [];
     for (const id of idList || []) {
       const p = productById.get(id);
       if (!p) { unresolved.push(id); continue; }
-      products_out.push({
-        id,
-        name: p.extName?.enUs,
-        brand: brandById.get(p.brandId)?.extName?.enUs,
-        category: p.category
-      });
+      out.push({ id, name: p.extName?.enUs, brand: brandById.get(p.brandId)?.extName?.enUs, category: p.category });
     }
-    return { products: products_out, unresolved };
+    return { products: out, unresolved };
   };
   const enrichBrands = (idList) => (idList || []).map(id => {
     const b = brandById.get(id);
     return b ? { id, name: b.extName?.enUs } : { id, name: null };
   });
-  const favEnriched = enrichProducts(favR.data?.productIdList);
-  const hideEnriched = enrichProducts(hideR.data?.productIdList);
+  const favE  = enrichProducts(favR.data?.productIdList);
+  const hideE = enrichProducts(hideR.data?.productIdList);
   const now = new Date().toISOString();
-  const favorites = {
-    synced_at: now,
-    products: favEnriched.products,
-    unresolvedProductIds: favEnriched.unresolved,
-    brands: enrichBrands(favR.data?.brandIdList)
-  };
-  const hidden = {
-    synced_at: now,
-    products: hideEnriched.products,
-    unresolvedProductIds: hideEnriched.unresolved,
-    brands: enrichBrands(hideR.data?.brandIdList)
-  };
-  // Build warm menu cache (using the same products + brands maps)
-  const favIds = new Set(favR.data?.productIdList || []);
-  const hideIds = new Set(hideR.data?.productIdList || []);
-  let kitchenId = null;
-  const menuItems = lunchSpecials
-    .filter(s => s.stockStatus !== 'outofstock')
-    .map(s => {
-      const p = productById.get(s.productId);
-      if (!p || hideIds.has(p.id)) return null;
-      kitchenId = kitchenId || s.kitchenId;
-      const portion = (p.extPortions || []).find(x => x.isDefault) || (p.extPortions || [])[0];
-      return {
-        name: p.extName?.enUs,
-        brand: brandById.get(p.brandId)?.extName?.enUs,
-        price: s.price,
-        category: p.category,
-        rating: p.averageRating || null,
-        in_favorites: favIds.has(p.id),
-        dietary: {
-          glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
-          nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
-        },
-        productId: p.id, productSpecialId: s.id,
-        portionId: portion?.id || null,                  // from product.extPortions (isDefault preferred)
-        portionCount: (p.extPortions || []).length       // >1 means user-facing portion choice exists
-      };
-    })
-    .filter(Boolean);
+  // Also stash the raw menu data + maps on window so an OPTIONAL Step 7 can build warm-cache without re-fetching.
+  // Total return payload here: ~25-50KB (favorites + hidden enriched), well within tool limits.
+  window.__weboxMenuRaw = menuR.data;
   return JSON.stringify({
-    favorites, hidden,
-    warmCache: { date: tmr, meal: 'Lunch', kitchenId, shippingTimeSectionId, items: menuItems }
+    favorites: { synced_at: now, products: favE.products, unresolvedProductIds: favE.unresolved, brands: enrichBrands(favR.data?.brandIdList) },
+    hidden:    { synced_at: now, products: hideE.products, unresolvedProductIds: hideE.unresolved, brands: enrichBrands(hideR.data?.brandIdList) }
   });
 })()
 ```
 
-Write three files:
+Write two files:
 
 **`~/Documents/WeBox/favorites.json`** ← `favorites`:
 ```json
@@ -381,22 +352,13 @@ Write three files:
 }
 ```
 
-**`~/Documents/WeBox/hidden.json`** ← `hidden` (same shape as favorites)
+**`~/Documents/WeBox/hidden.json`** ← `hidden` (same shape)
 
-**`~/Documents/WeBox/menu-cache/<TOMORROW>-Lunch.json`** ← warm cache:
-```json
-{
-  "cached_at": "ISO-8601",
-  "date": "<TOMORROW>",
-  "meal": "Lunch",
-  "kitchenId": 12838,
-  "items": [ ... ]
-}
-```
+**Skip the warm menu-cache** during onboarding. The first call to `/webox-order` will fetch the menu in ~1 second on demand. The 1-second saving doesn't justify shipping a 400KB payload back through the tool layer.
 
-**Why this is human-readable:** the user can open `favorites.json` in Finder and see "Mongolian Beef Bento — Xiangchuan Kitchen" instead of just "500874". The bare ID list is still derivable via `products.map(p => p.id)` for fast Set-based filtering in selection logic.
+**Why favorites.json is human-readable:** open it in Finder and see "Mongolian Beef Bento — Xiangchuan Kitchen" rather than "500874". The bare ID Set is derivable in JS as `new Set(favorites.products.map(p => p.id).concat(favorites.unresolvedProductIds))`.
 
-**Unresolved IDs:** items that were hearted/hidden in the past but are no longer in the current menu (brand rotated out, etc.). Kept as bare IDs in `unresolvedProductIds` so the data isn't lost. If you really want their names later, `POST /api/products` with the ID list resolves them.
+**Unresolved IDs:** hearted/hidden products that no longer appear in the current menu (brand rotated out, etc.). Preserved as bare IDs so the data isn't lost. To resolve names later: `POST /api/products` with the ID list.
 
 ---
 

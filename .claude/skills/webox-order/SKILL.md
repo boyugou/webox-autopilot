@@ -5,6 +5,9 @@ description: Order food from WeBox autonomously via the WeBox API. Fetches the f
 
 # WeBox Order Skill
 
+> **CRITICAL — about `javascript_tool` return values:**
+> The string returned by `javascript_tool` IS the full payload. **Never write to `~/Downloads/`** or use blob/URL-download tricks from JS — they don't go where you'd expect. Terminal display truncates around ~1KB for readability but the result reaches your tool-result in full. If a return value would genuinely exceed ~100KB, paginate via multiple smaller calls (stash on `window.__webox*` and slice back in chunks).
+
 **Fully API-based.** Fetches menu via `/api/productSpecials/v8/...`, plans, places via `POST /api/orders`. No DOM scraping, no cart manipulation. See `~/.claude/skills/webox/SITEMAP.md` for the full API reference.
 
 Data directory: `~/Documents/WeBox/`

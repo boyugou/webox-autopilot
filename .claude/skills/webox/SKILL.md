@@ -7,6 +7,9 @@ description: General WeBox knowledge loader for ad-hoc tasks. Loads the API + UR
 
 Invoked for ad-hoc WeBox tasks that don't map cleanly to one of the dedicated skills.
 
+> **CRITICAL — about `javascript_tool` return values:**
+> The string returned by `javascript_tool` IS the full payload. **Never write to `~/Downloads/`** or use blob/URL-download tricks from JS. Terminal display truncates around ~1KB but the result reaches your tool-result in full. For huge payloads, paginate by stashing on `window.__webox*` and slicing back in smaller calls.
+
 ## Step 1: Load Knowledge
 
 Read `~/.claude/skills/webox/SITEMAP.md` (full content). It catalogs:

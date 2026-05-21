@@ -7,6 +7,9 @@ description: One-stop API sync — refresh order history, favorites, hidden list
 
 Refreshes all read-only state via API and shows the calendar.
 
+> **CRITICAL — about `javascript_tool` return values:**
+> The string returned by `javascript_tool` IS the full payload. **Never write to `~/Downloads/`** or use blob/URL-download tricks from JS — they don't go where you'd expect. Terminal display truncates around ~1KB for readability but the result reaches your tool-result in full. If a return value would genuinely exceed ~100KB, paginate via multiple smaller calls (stash on `window.__webox*` and slice back in chunks).
+
 **Inputs:** existing `user-profile.json`, `address-info.json` in `~/Documents/WeBox/` (from `/webox-onboard`).
 **Outputs (refreshed):**
 - `orders/YYYY-Www.json` — per-ISO-week order history (active orders only)
@@ -92,6 +95,8 @@ Then write the new enriched objects to `favorites.json` and `hidden.json`.
 
 ## Step 3: Refresh Order History (paginated API)
 
+Same accumulate-on-page + return-summary pattern as webox-onboard Step 5. Stash the full list on `window.__weboxOrders`, return only a summary + shipping-windows, then paginate the orders back in chunks.
+
 ```javascript
 (async () => {
   const params = 'client=web&status=Paid%2CPartialRefunded%2CPlanned%2CUnpaid%2CRefunded%2CCancelled%2COnHold&pageSize=10&type=Individual&orderBy=id&desc=true&referenceTypes=GROUP_ORDER_META';
@@ -142,9 +147,26 @@ Then write the new enriched objects to `favorites.json` and `hidden.json`.
       });
     }
   }
-  return JSON.stringify({ totalFetched: all.length, activeCount: active.length, shippingWindows, orders: active });
+  // Stash the FULL active list on the page. Return only summary + shipping-windows + 20 recent orders.
+  window.__weboxOrders = active;
+  return JSON.stringify({
+    totalFetched: all.length,
+    activeCount: active.length,
+    shippingWindows,
+    recentOrders: active.slice(0, 20)
+  });
 })()
 ```
+
+**Then paginate `window.__weboxOrders` back in chunks of 50** to build the per-week files:
+```javascript
+(async () => {
+  const offset = /* agent: 0, 50, 100, ... */;
+  const chunk = (window.__weboxOrders || []).slice(offset, offset + 50);
+  return JSON.stringify({ offset, count: chunk.length, orders: chunk });
+})()
+```
+Loop until `count === 0`. Each chunk ~10KB — well within tool limits.
 
 **Default loop bound:** stop early once you've fetched `history_window_days × 1.5` worth (≈ 30 weeks ≈ 60 pages ≈ 6 seconds). If the user says "pull all my history", remove that bound and fetch all `totalCount` orders.
 
