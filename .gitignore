@@ -12,8 +12,9 @@
 test-*
 dev-*
 
-# Local user data — lives in ~/.webox-autopilot/, not in the repo
-user-preferences.local.md
+# Local user data — lives in ~/Documents/WeBox/, not in the repo
+# (listed here in case anyone accidentally copies them into the project dir)
+preferences.local.md
 favorites-cache.md
 order-history-cache.json
 order-calendar.md

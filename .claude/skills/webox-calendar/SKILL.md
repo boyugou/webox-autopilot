@@ -5,7 +5,7 @@ description: View and sync the local WeBox order calendar. Shows which meal slot
 
 # WeBox Calendar Skill
 
-Maintains and displays the local WeBox order calendar at `~/.webox-autopilot/order-calendar.md`.
+Maintains and displays the local WeBox order calendar at `~/Documents/WeBox/order-calendar.md`.
 
 The calendar has two distinct layers:
 - **Long-term storage**: all ordered slots ever recorded, kept in the file indefinitely
@@ -33,11 +33,11 @@ Navigate to `https://www.webox.com/order/list/normal` and extract all orders:
 })()
 ```
 
-Also cross-reference with the existing `~/.webox-autopilot/plan-cache.md` to enrich slots with item details where available.
+Also cross-reference with the existing `~/Documents/WeBox/plan-cache.md` to enrich slots with item details where available.
 
 ## Step 2: Update order-calendar.md
 
-Read the existing `~/.webox-autopilot/order-calendar.md`. Merge the freshly scraped data:
+Read the existing `~/Documents/WeBox/order-calendar.md`. Merge the freshly scraped data:
 - Add any new slots not already in the file
 - Do not remove existing entries (the WeBox order list only shows recent history; older local entries may be correct)
 - Update `last_synced` timestamp

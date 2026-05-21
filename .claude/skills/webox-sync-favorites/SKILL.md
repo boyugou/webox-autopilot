@@ -5,7 +5,7 @@ description: Refresh the local WeBox favorites cache by re-scraping the favorite
 
 # WeBox Sync Favorites Skill
 
-Re-scrapes the WeBox favorites page and updates `~/.webox-autopilot/favorites-cache.md`.
+Re-scrapes the WeBox favorites page and updates `~/Documents/WeBox/favorites-cache.md`.
 
 Run this when:
 - The user says "refresh my favorites" or "update my favorites list"
@@ -20,7 +20,7 @@ Call `tabs_context_mcp`. If no tab is available, stop and tell the user to open 
 
 ## Step 2: Load Existing Cache
 
-Read `~/.webox-autopilot/favorites-cache.md` if it exists. Store the current item list — you'll diff against it in Step 4.
+Read `~/Documents/WeBox/favorites-cache.md` if it exists. Store the current item list — you'll diff against it in Step 4.
 
 ## Step 3: Scrape Favorites Page
 
@@ -78,7 +78,7 @@ If nothing changed:
 
 ## Step 5: Write Updated Cache
 
-Overwrite `~/.webox-autopilot/favorites-cache.md` with the new list:
+Overwrite `~/Documents/WeBox/favorites-cache.md` with the new list:
 
 ```markdown
 # Favorites Cache

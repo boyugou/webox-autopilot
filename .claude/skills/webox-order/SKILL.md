@@ -22,82 +22,24 @@ You are ordering food from WeBox on behalf of the user. Use the `mcp__claude-in-
 
 ---
 
-## Step 0: Prerequisites and First-Run Onboarding
+## Step 0: Prerequisite Check
 
-### 0a. Verify prerequisites
+### 0a. Claude in Chrome connected?
+Call `tabs_context_mcp`. If it returns no tabs or an error, stop:
+> Claude in Chrome doesn't seem to be connected. Make sure Chrome is running with the [Claude in Chrome extension](https://code.claude.com/docs/en/chrome) enabled, then try again.
 
-Before anything else, run these checks:
+### 0b. First-run check
+If `~/Documents/WeBox/preferences.md` does **not** exist, stop and say:
+> It looks like you haven't set up WeBox yet. Run `/webox-onboard` first — it takes about 2 minutes and sets up your preferences, favorites, and order history.
 
-1. **Claude in Chrome connected?** Call `tabs_context_mcp`. If it returns no tabs or an error, stop and tell the user:
-   > Claude in Chrome doesn't seem to be connected. Please make sure Chrome is running with the Claude in Chrome extension enabled, then try again.
-
-2. **Logged into WeBox?** Navigate to `https://www.webox.com` and check whether the page shows a logged-in state (user avatar / name visible) or a login prompt. If not logged in, stop and tell the user:
-   > It looks like you're not logged into WeBox in Chrome. Please log in at webox.com and try again.
-
-### 0b. Check for first-run vs returning user
-
-Check whether `~/.webox-autopilot/user-preferences.md` exists.
-
-**If the file already exists:** skip to Step 1 — this is a returning user, no onboarding needed.
-
-**If the file does not exist:** this is a first run. Do the following steps in order:
-
-#### 0c. Ask the onboarding question
-
-Say:
-
-> Before I start ordering, I'd like to set up your preferences. Just tell me naturally — anything about your diet, allergens, cuisines you love or hate, budget, whether you want me to ask before placing orders, etc. You can be as brief or detailed as you like, and mix languages freely.
-
-#### 0d. While waiting — gather initial data in the background
-
-Immediately after asking (before the user replies, in the same turn if possible), kick off the following so the data is ready when the user answers:
-
-1. **Scrape order history** from `https://www.webox.com/order/list/normal` — extract all recent ordered date+meal slots. Save to `~/.webox-autopilot/order-history-cache.json` with current timestamp.
-
-2. **Scrape favorites** from `https://www.webox.com/menu/section/My%20Favorites?date=TODAY&shippingTime=Lunch` (use today's date). Scroll 10× to load all items. Save to `~/.webox-autopilot/favorites-cache.md` with today's date as `last_updated`.
-
-3. **Build initial order calendar** — from the order history, construct `~/.webox-autopilot/order-calendar.md`: a persistent local calendar of all known ordered slots. This is distinct from `plan-cache.md` (which tracks items and variety). The calendar's only job is to record *which date+meal slots are filled*, so the skill can skip them without re-scraping `/order/list/normal` each time.
-
-   Format:
-   ```markdown
-   # Order Calendar
-   last_synced: YYYY-MM-DD
-
-   ## 2026-05
-   - Mon 05/18 Lunch ✅
-   - Mon 05/18 Dinner ✅
-   - Tue 05/19 Lunch ✅
-   - Thu 05/21 Lunch ✅ #3258578
-   - Fri 05/22 Lunch ✅ #3258614
-   ```
-
-   **Calendar update rules:**
-   - Populated from `/order/list/normal` on first run
-   - Each time the skill places an order, append the new slot immediately (don't wait for the next full sync)
-   - `last_synced` is updated whenever a full scrape of order history is done
-   - The calendar is the **primary source of truth** for "is this slot already ordered?" — only fall back to a live scrape if `last_synced` is more than 1 day old
-
-These three operations happen before the user responds to the onboarding question. By the time they reply, all initial data is cached.
-
-#### 0e. Process the onboarding reply
-
-Parse the user's response and extract preferences. Map them to the fields in `user-preferences.md`. Use judgment for anything that doesn't fit a field — put it in the free-text notes section. Leave fields at their defaults if not mentioned.
-
-Write `~/.webox-autopilot/user-preferences.md` (create `~/.webox-autopilot/` if needed).
-
-Echo a brief confirmation:
-> Got it! Preferences saved: budget $25, vegetarian, prefer Chinese and Japanese, no mushrooms, I'll confirm before ordering.
->
-> I also found your order history and favorites — you have X items on your favorites list and have already ordered through [latest date]. Ready to go.
-
-Then continue to Step 1 (most caches are already populated — steps 1d and 1e will be instant).
+If the file exists, continue to Step 1.
 
 ---
 
 ## Step 1: Load User Preferences and Caches
 
 ### 1a. Read preferences
-Read `~/.webox-autopilot/user-preferences.md`.
+Read `~/Documents/WeBox/preferences.md`.
 
 Key settings to extract:
 - `budget` and `budget_mode` (spend-up-to vs ceiling-only)
@@ -108,13 +50,13 @@ Key settings to extract:
 - Dietary restrictions, preferred cuisines, drink policy
 
 ### 1b. Load item reviews
-Read `~/.webox-autopilot/item-reviews.md` if it exists. This file contains the user's personal ratings and notes on specific dishes. Keep this loaded — it will be injected into selection decisions in Step 4.
+Read `~/Documents/WeBox/item-reviews.md` if it exists. This file contains the user's personal ratings and notes on specific dishes. Keep this loaded — it will be injected into selection decisions in Step 4.
 
 ### 1c. Prune stale plan cache entries
-Read `~/.webox-autopilot/plan-cache.md` and drop any entries older than `plan_cache_days`. Use remaining entries for variety tracking (avoid items ordered in the past `avoid_repeat_days` days).
+Read `~/Documents/WeBox/plan-cache.md` and drop any entries older than `plan_cache_days`. Use remaining entries for variety tracking (avoid items ordered in the past `avoid_repeat_days` days).
 
 ### 1d. Load favorites cache
-Check `~/.webox-autopilot/favorites-cache.md`:
+Check `~/Documents/WeBox/favorites-cache.md`:
 - If it exists and `last_updated` is within **7 days**: use the cached list, skip scraping the favorites page.
 - If missing or stale: scrape the favorites page (Step 3), then write the results to `favorites-cache.md`.
 
@@ -131,7 +73,7 @@ last_updated: YYYY-MM-DD
 To force a refresh, the user can say "refresh my favorites" and you should delete or ignore the cache.
 
 ### 1e. Load order history cache
-Check `~/.webox-autopilot/order-history-cache.json`:
+Check `~/Documents/WeBox/order-history-cache.json`:
 - If it exists and `cached_at` is within **1 hour**: use it, skip navigating to `/order/list/normal`.
 - Otherwise: scrape order history (Step 2), then write to the cache file.
 
@@ -141,7 +83,7 @@ Check `~/.webox-autopilot/order-history-cache.json`:
 
 Use this decision tree:
 
-1. **Read `~/.webox-autopilot/order-calendar.md`** — if it exists and `last_synced` is within 1 day, use it as the authoritative source of already-ordered slots. No network request needed.
+1. **Read `~/Documents/WeBox/order-calendar.md`** — if it exists and `last_synced` is within 1 day, use it as the authoritative source of already-ordered slots. No network request needed.
 
 2. **Otherwise**, scrape `/order/list/normal` once and update both `order-calendar.md` and `order-history-cache.json`:
 
@@ -195,7 +137,7 @@ Note: `shippingTime` can be `Lunch` or `Dinner` — availability may differ, but
 })()
 ```
 
-After a fresh scrape, update `~/.webox-autopilot/favorites-cache.md`.
+After a fresh scrape, update `~/Documents/WeBox/favorites-cache.md`.
 
 ### What to Scrape
 
@@ -309,7 +251,7 @@ Wait for the user's response. Apply any requested changes to the plan, then conf
 
 ## Step 6: Save Plan to Cache
 
-Before placing any orders, write the plan to `~/.webox-autopilot/plan-cache.md`.
+Before placing any orders, write the plan to `~/Documents/WeBox/plan-cache.md`.
 
 ### Cache File Format
 
@@ -376,13 +318,13 @@ If result is `modal_opened`:
 2. `computer scroll_to` + `computer left_click` on the ref
 3. The first/default option is pre-selected by WeBox — accept unless preferences require otherwise
 
-**Check `~/.webox-autopilot/items-with-options.md`** before clicking: if the item is cached there, use the noted preferred option instead of the default.
+**Check `~/Documents/WeBox/items-with-options.md`** before clicking: if the item is cached there, use the noted preferred option instead of the default.
 
 **Complex options (5+ choices, poke bowls, build-your-own):**
 - Take a screenshot, use model judgment (computer use) to select reasonable options
 - Then click "Add to Cart"
 
-**After encountering a new item with options**, append to `~/.webox-autopilot/items-with-options.md`:
+**After encountering a new item with options**, append to `~/Documents/WeBox/items-with-options.md`:
 ```
 - [Brand] [Item Name] — option: "Choose Rice" (single) — default chosen: Purple Rice
 ```
@@ -400,7 +342,7 @@ After all items for one date+meal are in the cart:
 1. Open cart (click cart icon top-right)
 2. Use `find("Quick Checkout button")` → `computer scroll_to` + `computer left_click`
 3. Wait for "Thank you for your order" page, note the order number
-4. Update that slot's status in `~/.webox-autopilot/plan-cache.md` to `ordered ✅ #ORDERNUM`
+4. Update that slot's status in `~/Documents/WeBox/plan-cache.md` to `ordered ✅ #ORDERNUM`
 
 ```
 ✅ Order placed! Order #XXXXXXX
@@ -427,13 +369,13 @@ After all orders succeed:
 1. **Invite reviews** (only if the user hasn't already given feedback in this session):
    > Orders placed! If you have any feedback on items you've tried recently — ratings, things you loved or want to avoid — just tell me and I'll save them for next time.
 
-   If the user responds with feedback, parse it and append to `~/.webox-autopilot/item-reviews.md`.
+   If the user responds with feedback, parse it and append to `~/Documents/WeBox/item-reviews.md`.
 
 2. **Update preferences** if new dietary or cuisine preferences were inferred from the conversation.
 
 ### Item Review File Format
 
-`~/.webox-autopilot/item-reviews.md`:
+`~/Documents/WeBox/item-reviews.md`:
 
 ```markdown
 # Item Reviews

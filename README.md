@@ -24,7 +24,7 @@ Claude Code reads `CLAUDE.md` in this repo and handles the rest automatically.
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Both options install all three skills: `webox-order`, `webox-calendar`, and `webox-sync-favorites`.
+Both options install all four skills: `webox-onboard`, `webox-order`, `webox-calendar`, and `webox-sync-favorites`.
 
 ## Requirements
 
@@ -60,19 +60,27 @@ Update my budget to $25.
 I'm vegetarian now.
 ```
 
-### First-Run Onboarding
+### First Time? Run `/webox-onboard`
 
-The first time you invoke the skill, Claude will ask you a single open-ended question:
+Before ordering for the first time, run:
 
-> Before I start ordering, tell me about your food preferences — diet, allergens, cuisines you love or hate, budget, etc.
+```
+/webox-onboard
+```
 
-Just answer naturally in any language. Claude parses your reply and writes `~/.webox-autopilot/user-preferences.md` automatically. You can edit the file anytime after that.
+This will:
+1. Verify Chrome and WeBox login
+2. Ask you one open-ended question about your food preferences (answer however feels natural — any language, one sentence or a paragraph)
+3. Scrape your favorites and order history in the background while you type
+4. Create all data files in `~/Documents/WeBox/`
+
+Takes about 2 minutes. After that, just order normally. To update your skill to the latest version, say "update webox-autopilot" — `/webox-onboard` handles it.
 
 ---
 
 ## Configuration Reference
 
-All settings live in `~/.webox-autopilot/user-preferences.md`. Claude reads this file at the start of every session. Edit it anytime — the next order picks up your changes.
+All settings live in `~/Documents/WeBox/preferences.md`. Claude reads this file at the start of every session. Edit it anytime — the next order picks up your changes.
 
 ### Budget
 
@@ -120,11 +128,11 @@ All settings live in `~/.webox-autopilot/user-preferences.md`. Claude reads this
 
 ## Local Cache Files
 
-The skill maintains several cache files in `~/.webox-autopilot/` to avoid redundant scraping and improve variety tracking. All are plain-text and human-readable — edit or delete them anytime.
+The skill maintains several cache files in `~/Documents/WeBox/` to avoid redundant scraping and improve variety tracking. All are plain-text and human-readable — edit or delete them anytime.
 
 | File | TTL | Purpose |
 |------|-----|---------|
-| `user-preferences.md` | permanent | Your budget, dietary restrictions, cuisine preferences, and ordering behavior settings. Created from your onboarding answers. Edit anytime. |
+| `preferences.md` | permanent | Your budget, dietary restrictions, cuisine preferences, and ordering behavior settings. Created from your onboarding answers. Edit anytime. |
 | `item-reviews.md` | permanent | Your personal ratings and notes on specific dishes. Hard-injected into every ordering decision — 5/5 items get prioritized, "never order again" items are excluded. |
 | `favorites-cache.md` | 7 days | Cached WeBox favorites list. Re-scraped automatically when stale. Say "refresh my favorites" to force an update. |
 | `order-history-cache.json` | 1 hour | Cached order history. Avoids re-scraping `/order/list/normal` if you run back-to-back sessions. |
@@ -140,10 +148,10 @@ The skill maintains several cache files in `~/.webox-autopilot/` to avoid redund
 User prompt
     │
     ▼
-0. First run? → onboarding question → parse reply → write user-preferences.md
+0. First run? → onboarding question → parse reply → write preferences.md
     │
     ▼
-1. Load user-preferences.md + item-reviews.md
+1. Load preferences.md + item-reviews.md
    + Load favorites cache (skip scraping if < 7 days old)
    + Load order history cache (skip scraping if < 1 hour old)
    + Prune stale plan cache entries
@@ -184,10 +192,10 @@ The first time you use the skill, Claude has no local state and needs to build e
 | Step | What happens | Why |
 |------|-------------|-----|
 | Prerequisite check | Verify Claude in Chrome is connected and WeBox is logged in | Always runs — fast, catches setup issues early |
-| Onboarding question | Claude asks one open-ended question about diet, budget, and preferences | `user-preferences.md` doesn't exist yet |
+| Onboarding question | Claude asks one open-ended question about diet, budget, and preferences | `preferences.md` doesn't exist yet |
 | *(while you type your answer)* Scrape order history | Navigate to `/order/list/normal`, extract all past orders, build initial order calendar | Runs in parallel with onboarding — no cache yet |
 | *(while you type your answer)* Scrape favorites | Navigate to your favorites page, scroll 10× to trigger lazy loading, extract all items | Runs in parallel with onboarding — the slowest step (~60s), but hidden behind your typing time |
-| Parse onboarding reply | Extract preferences from your natural-language answer, write `user-preferences.md` | All caches are already populated by this point |
+| Parse onboarding reply | Extract preferences from your natural-language answer, write `preferences.md` | All caches are already populated by this point |
 | Handle option modals | Every item with required options triggers a modal — handled dynamically | `items-with-options.md` doesn't exist, no prior knowledge |
 | Item selection | Based on preferences file + scraped menu — no ratings data yet | `item-reviews.md` doesn't exist |
 | Variety tracking | No repeat-avoidance history | `plan-cache.md` doesn't exist before this session |
@@ -266,10 +274,11 @@ A: Tell Claude "refresh my favorites" and it will re-scrape and overwrite the ca
 
 ## Skills
 
-| Skill | Invoke by saying | Purpose |
-|-------|-----------------|---------|
+| Skill | Invoke | Purpose |
+|-------|--------|---------|
+| `webox-onboard` | `/webox-onboard` or "set up WeBox" | First-time setup: preferences, favorites, order history. Also handles skill updates. |
 | `webox-order` | "Order my lunch for tomorrow" | Full ordering flow — scrape, select, cart, checkout |
-| `webox-calendar` | "Show my WeBox calendar" / "Sync my order history" | View this week + next week, sync from WeBox, maintain long-term local record |
+| `webox-calendar` | "Show my WeBox calendar" | View this week + next week, sync from WeBox, maintain long-term local record |
 | `webox-sync-favorites` | "Refresh my favorites" | Re-scrape favorites page, diff against cache, show what changed |
 
 ## Updating
@@ -278,7 +287,7 @@ A: Tell Claude "refresh my favorites" and it will re-scrape and overwrite the ca
 git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-Your `~/.webox-autopilot/` directory (preferences, reviews, caches) is never touched by updates.
+Your `~/Documents/WeBox/` directory (preferences, reviews, caches) is never touched by updates.
 
 ## Contributing
 

@@ -59,7 +59,7 @@ I'm vegetarian now — update my preferences.
 
 ## User preferences
 
-`~/.webox-autopilot/user-preferences.md` controls budget, dietary restrictions, confirmation mode, and more. Created automatically on first run from your onboarding answers. Edit it anytime.
+`~/Documents/WeBox/preferences.md` controls budget, dietary restrictions, confirmation mode, and more. Created automatically on first run from your onboarding answers. Edit it anytime.
 
 ## Updating
 
@@ -69,4 +69,4 @@ bash /tmp/webox-autopilot/install.sh
 rm -rf /tmp/webox-autopilot
 ```
 
-Your `~/.webox-autopilot/` files (preferences, reviews, caches) are never overwritten by updates.
+Your `~/Documents/WeBox/` files (preferences, reviews, caches) are never overwritten by updates.
