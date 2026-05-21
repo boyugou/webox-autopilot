@@ -296,6 +296,7 @@ Identify the next 1–2 orderable Lunch slots (and corresponding Dinners if with
           glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
           nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
         },
+        stockQuantity: s.stockQuantity,                   // 0 = unlimited; >0 = finite remaining
         productId: p.id, productSpecialId: s.id,
         portionId: portion?.id || null,                  // from product.extPortions (isDefault preferred)
         portionCount: (p.extPortions || []).length       // >1 means user-facing portion choice exists

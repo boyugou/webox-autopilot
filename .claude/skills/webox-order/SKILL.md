@@ -84,6 +84,9 @@ Read `~/Documents/WeBox/menu-cache/<DATE>-<MEAL>.json`. If `cached_at < 60 minut
           glutenFree: !!p.glutenFree, dairyFree: !!p.dairyFree, halal: !!p.halalCertified,
           nutFree: !!p.nutFree, vegan: p.veggieLevel === 'Vegan', vegetarian: p.veggieLevel === 'Vegetarian'
         },
+        // Stock — 0 means UNLIMITED (item not tracked); >0 means finite remaining.
+        // At plan time, never request more than (stockQuantity || Infinity).
+        stockQuantity: s.stockQuantity,
         // IDs needed only for Place Order body (Step 6) — agent plans against name/brand/etc above
         productId: p.id,
         productSpecialId: s.id,
@@ -129,6 +132,13 @@ Build a complete plan for ALL requested slots **before placing anything**.
 
 ### Quantities (× N notation)
 Budget validation: `unit_price × qty`.
+
+**Respect `stockQuantity` at plan time.** Each cached menu item carries `stockQuantity`:
+- `stockQuantity === 0` → **unlimited stock** (the item isn't being tracked). Order any quantity.
+- `stockQuantity > 0` → **finite remaining**. NEVER plan a quantity larger than `stockQuantity`. If the user explicitly asks for more (e.g., "5 fuji apples" but only 2 in stock), say so up front:
+  > Only 2 Fuji Apples available — picking those + filling the rest with [substitute] to stay within budget?
+
+This avoids POST-time stock failures for low-stock items.
 
 ### Selection priority
 
@@ -311,14 +321,27 @@ For each slot in the plan, call `POST /api/orders` with the body assembled from:
 > The Place Order POST is your source of truth. `code: 1` + `data.id` = the order exists. Move on.
 
 **On failure** (`code !== 1`):
-- Print `msg` to the user
-- Keep `planned: true` in the per-week file so the user can retry
-- Common cases:
-  - `"cutoff passed"` → slot's order window closed; suggest picking a later slot
-  - `"item out of stock"` → re-fetch the menu, substitute, retry
-  - `"duplicate order"` → slot already has an active order; check `orders/` for an existing entry
+- Print `msg` to the user verbatim — that's the truth about what went wrong
+- Keep `planned: true` in the per-week file so the slot is retry-eligible
+- Cap automatic retries at **2 per slot** (`__retryCount` on the planned entry). After 2 failures, surface the error and ask the user what to do.
 
-**Sequential, never parallel.** Place Order is a real mutation — race conditions could cause duplicate charges. Always one at a time.
+**Failure-case recipe — stock issues (the most common):**
+
+WeBox menu data can lag behind real stock by minutes. An item the menu API showed as `Instock` may already be sold out by the time you POST. The `msg` typically contains the keyword `stock`, `out of stock`, `sold out`, `insufficient`, `not available`, or `unavailable`. Handle in this exact order:
+
+1. **Re-fetch the menu for that exact (date, meal)** — bypass the local `menu-cache` (the cache may itself be stale; fetch fresh).
+2. **Locate the failing item in the fresh menu**:
+   - If it's now `stockStatus === "outofstock"` or absent → item is genuinely gone. Find a **substitute**: same `category`, similar `price` (±$1.00), prefer `in_favorites: true`. Announce the swap to the user in one sentence (e.g., "Apple Fuji out of stock. Swapping in Apple Gala (same price, same brand category)."). Then retry POST with the substitute.
+   - If it's still listed with `stockQuantity > 0 && stockQuantity < requestedQty` → reduce the qty to `stockQuantity` and refill the leftover budget with a different filler. Retry POST.
+   - If it's still listed as in-stock and stockQuantity is 0/unlimited → the menu data was right but WeBox's stock service is briefly inconsistent. Wait ~1.5 seconds and retry the same POST exactly once. If it fails again, treat it like the "genuinely gone" case above.
+3. After substitution + retry, if the second POST still fails with a stock error → surface to user. Don't try a third time silently.
+
+**Other common failure cases:**
+- `"cutoff passed"` / `"cutoffTime"` in msg → slot's order window has closed. Don't retry. Tell the user; suggest a later slot.
+- `"duplicate order"` / `"already exists"` in msg → slot already has an active order. Check `orders/YYYY-Www.json` for an existing entry — likely a previous run succeeded but the local state wasn't updated. Do NOT retry; instead, fetch the existing order from `/api/orders/list?status=Paid&...` and reconcile the local file.
+- `"budget"` in msg → backend rejected the budget. Trim the most expensive non-essential item and retry once.
+
+**Sequential, never parallel.** Place Order is a real mutation — race conditions could cause duplicate charges. Always one at a time, including retries.
 
 ---
 
