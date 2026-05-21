@@ -305,27 +305,21 @@ git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot &&
 
 ## Full reinstall (wipe everything + reinstall + re-onboard)
 
-For a completely clean slate — useful when local data drifted off-schema, after a major version bump, or if you just want to start over:
+For a completely clean slate — useful when local data drifted off-schema, after a major version bump, or if you just want to start over. **One-liner:**
 
 ```bash
-# 1. WIPE local data (preferences, history, identity caches, reviews — everything in ~/Documents/WeBox/).
-#    Your WeBox account itself (orders, hearts, hidden list) is untouched — it all lives on webox.com.
-rm -rf ~/Documents/WeBox
-
-# 2. Wipe installed skills, then reinstall fresh from the latest commit.
-rm -rf ~/.claude/skills/webox ~/.claude/skills/webox-onboard ~/.claude/skills/webox-order ~/.claude/skills/webox-favorite ~/.claude/skills/webox-sync ~/.claude/skills/webox-reset
-git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
-
-# 3. Restart Claude Code so the new skill files are picked up, then:
-#    > claude --chrome
-#    > /webox-onboard
+rm -rf ~/Documents/WeBox ~/.claude/skills/webox ~/.claude/skills/webox-onboard ~/.claude/skills/webox-order ~/.claude/skills/webox-favorite ~/.claude/skills/webox-sync ~/.claude/skills/webox-reset && git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot && bash /tmp/webox-autopilot/install.sh && rm -rf /tmp/webox-autopilot
 ```
 
-⚠️ Step 1 is destructive — `~/Documents/WeBox/` files (config.yaml, preferences.md, item-reviews.md, etc.) cannot be recovered after deletion. If you want to keep your reviews/notes, back them up first:
+Then restart Claude Code (`claude --chrome`) and run `/webox-onboard`.
+
+⚠️ This is destructive — `~/Documents/WeBox/` (config.yaml, preferences.md, item-reviews.md, etc.) cannot be recovered. To preserve your reviews/notes, back them up first:
 
 ```bash
 mv ~/Documents/WeBox ~/Documents/WeBox.backup.$(date +%Y%m%d-%H%M%S)
 ```
+
+Your WeBox account itself (orders, hearts, hidden list) is untouched — it all lives on webox.com and `/webox-onboard` will refetch.
 
 ## Contributing
 
