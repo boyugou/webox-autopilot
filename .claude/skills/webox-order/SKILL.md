@@ -6,38 +6,8 @@ description: Order food from WeBox autonomously via the WeBox API. Fetches the f
 # WeBox Order Skill
 
 > **CRITICAL — about `javascript_tool` return values:**
-> The string returned by `javascript_tool` IS the full payload. **Never write to `~/Downloads/`** or use blob/URL-download tricks from JS — they don't go where you'd expect. Terminal display truncates around ~1KB for readability but the result reaches your tool-result in full. If a return value would genuinely exceed ~100KB, paginate via multiple smaller calls (stash on `window.__webox*` and slice back in chunks).
+> Tool-result truncation is REAL — at ~1000 characters / ~50 lines, your displayed AND model-context content is cut, with everything after `[TRUNCATED]` lost. Verified empirically. **Never write to `~/Downloads`** or use blob/download tricks from JS — they don't work. The reliable pattern is the chunked retrieval below: stash data on `window.__webox*`, slice it back in deterministic chunks of 5 items (flat JSON, no pretty-printing) per call. Larger chunks WILL silently drop data.
 
-**Fully API-based.** Fetches menu via `/api/productSpecials/v8/...`, plans, places via `POST /api/orders`. No DOM scraping, no cart manipulation. See `~/.claude/skills/webox/SITEMAP.md` for the full API reference.
-
-Data directory: `~/Documents/WeBox/`
-
-## Defaults
-
-- **Meal types:** When not specified, order both **Lunch and Dinner** per day.
-- **Weekends:** Skip Sat/Sun for multi-day ranges unless asked.
-- **Confirmation mode:** `auto` by default. Set `confirm_before_order: true` for plan-first mode.
-
-## WeBox Constraints
-
-- **7-day window:** Orders up to 7 days ahead only.
-- **Meal cutoffs:** Slots have order cutoffs; the menu API simply won't return a slot once its cutoff has passed.
-- **One slot = one POST:** each date+meal is a separate order.
-
----
-
-## Step 0: Prerequisite Check
-
-```
-tabs_context_mcp({ createIfEmpty: true })
-```
-Capture the `tabId`. Navigate it to `https://www.webox.com` (login probe). Verify `a.cart.fr` exists.
-
-Check that all identity files exist in `~/Documents/WeBox/`:
-- `config.yaml` · `user-profile.json` · `address-info.json` · `favorites.json`
-
-If any is missing:
-> You haven't set up WeBox yet. Run `/webox-onboard` first — takes about 2 minutes.
 
 ---
 

@@ -8,7 +8,7 @@ description: One-stop API sync — refresh order history, favorites, hidden list
 Refreshes all read-only state via API and shows the calendar.
 
 > **CRITICAL — about `javascript_tool` return values:**
-> The string returned by `javascript_tool` IS the full payload. **Never write to `~/Downloads/`** or use blob/URL-download tricks from JS — they don't go where you'd expect. Terminal display truncates around ~1KB for readability but the result reaches your tool-result in full. If a return value would genuinely exceed ~100KB, paginate via multiple smaller calls (stash on `window.__webox*` and slice back in chunks).
+> Tool-result truncation is REAL — at ~1000 characters / ~50 lines, your displayed AND model-context content is cut, with everything after `[TRUNCATED]` lost. Verified empirically. **Never write to `~/Downloads/`** or use blob/download tricks. The reliable pattern is chunked retrieval: stash data on `window.__webox*`, slice it back in deterministic chunks of 5 items per call with **flat (no pretty-print) JSON**. Larger chunks silently drop data.
 
 **Inputs:** existing `user-profile.json`, `address-info.json` in `~/Documents/WeBox/` (from `/webox-onboard`).
 **Outputs (refreshed):**
@@ -78,16 +78,19 @@ Refreshing requires the current menu's `products` array to resolve IDs → reada
 })(/* addrId integer */, /* 'YYYY-MM-DD' */)
 ```
 
-### 2b/2c — Chunked retrieval (30 products per call)
+### 2b/2c — Chunked retrieval (5 products per call, flat JSON)
 
 ```javascript
-// favorites chunk; loop offset = 0, 30, 60, ... until done: true
+// favorites chunk; loop offset = 0, 5, 10, ... until done: true
+// 5 items per chunk + flat JSON keeps every return under the ~1000-char tool-result truncation limit
 (async (offset) => {
   const products = window.__favPayload?.products || [];
-  const chunk = products.slice(offset, offset + 30);
+  const chunk = products.slice(offset, offset + 5);
   return JSON.stringify({ offset, total: products.length, chunkCount: chunk.length, done: offset + chunk.length >= products.length, products: chunk });
 })(/* offset integer */)
 ```
+
+**On every chunk, verify `chunkCount === 5`** (or `< 5` only when `done: true`). If a chunk returns fewer items unexpectedly, re-fetch that offset. Do NOT use larger chunk sizes — they will silently drop data past the truncation limit.
 
 Then tail call for brands + unresolved:
 ```javascript
@@ -192,11 +195,11 @@ Same accumulate-on-page + return-summary pattern as webox-onboard Step 5. Stash 
 })()
 ```
 
-**Then paginate `window.__weboxOrders` back in chunks of 50** to build the per-week files:
+**Then paginate `window.__weboxOrders` back in chunks of 3** to build the per-week files:
 ```javascript
 (async () => {
   const offset = /* agent: 0, 50, 100, ... */;
-  const chunk = (window.__weboxOrders || []).slice(offset, offset + 50);
+  const chunk = (window.__weboxOrders || []).slice(offset, offset + 3);
   return JSON.stringify({ offset, count: chunk.length, orders: chunk });
 })()
 ```

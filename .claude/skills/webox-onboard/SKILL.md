@@ -212,18 +212,18 @@ The full order history for a long-time user can be 400+ orders × multiple items
 
 **Then write `shipping-windows.json` immediately** (it's small — just two-three meal entries).
 
-**Then paginate `window.__weboxOrders` back in chunks of 50** to build the per-week files. Run this JS as many times as needed:
+**Then paginate `window.__weboxOrders` back in chunks of 3** to build the per-week files. Run this JS as many times as needed:
 
 ```javascript
-// Return chunk by offset; agent loops offset += 50 until empty
+// Return chunk by offset; agent loops offset += 3 until empty
 (async () => {
   const offset = /* agent passes 0, 50, 100, ... */;
-  const chunk = (window.__weboxOrders || []).slice(offset, offset + 50);
+  const chunk = (window.__weboxOrders || []).slice(offset, offset + 3);
   return JSON.stringify({ offset, count: chunk.length, orders: chunk });
 })()
 ```
 
-For a user with 400 active orders that's 8 small (~10KB each) round trips, each easily within tool limits. Process each chunk into per-week JSON before the next call.
+For a user with 400 active orders that's ~135 small (~800-byte each) round trips, each easily within tool limits. Process each chunk into per-week JSON before the next call.
 
 **Write `~/Documents/WeBox/shipping-windows.json`** with the `shippingWindows` field:
 ```json
@@ -295,9 +295,9 @@ For each active order, group by `isoWeek(dateShipping)` and write to `~/Document
 This step enriches favorites + hidden ID lists into human-readable `{id, name, brand, category}` objects using the menu API's `products` array as a lookup. **Run the three JS snippets below in order — they are designed to keep each tool-result under the safe display limit.**
 
 > **About `javascript_tool` return values:**
-> The string returned by `javascript_tool` lands in the tool_result your model sees. The terminal display abbreviates long results with `[TRUNCATED]`, **but the abbreviation is cosmetic** — your tool_result text contains the full payload (within Claude Code's tool-result cap). The pattern below sidesteps the question entirely by chunking the output explicitly so no single return exceeds ~5KB.
+> Tool-result truncation is REAL — at ~1000 characters / ~50 lines, your displayed AND model-context content is cut. Anything after `[TRUNCATED]` is lost (empirically verified — a 7438-byte single-string return arrives with only ~870 chars and the end marker missing). The chunked pattern below is mandatory for any payload that might exceed this limit.
 >
-> **Never write data to `~/Downloads`** or use blob/URL-download tricks from JS. Use the pattern below.
+> **Never write data to `~/Downloads`** or use blob/URL-download tricks. They don't work.
 
 ### Step 6a — Fetch + enrich + stash, return summary only
 
@@ -348,14 +348,19 @@ This step enriches favorites + hidden ID lists into human-readable `{id, name, b
 
 This returns a small summary (~200 bytes). Record `favCount`, `hideCount`, and `synced_at` from the response — you'll use them in Step 6c.
 
-### Step 6b — Pull favorites in chunks of 30, build favorites.json incrementally
+### Step 6b — Pull favorites in chunks of 5 (deterministic, single-line JSON)
 
-Loop the snippet below with `offset = 0, 30, 60, ...` until the returned `done` flag is `true`. Accumulate the `products` arrays in your own state.
+> **The tool-result truncation is REAL, not cosmetic.** It is enforced by Claude Code at roughly 50–60 lines of pretty-printed output OR ~1000 characters. Both your visual display AND your model-context will be truncated at this point. You CANNOT trust that data after `[TRUNCATED]` reached you. So chunk-fetch is mandatory for any payload that might exceed this.
+>
+> **DO NOT try larger chunks. DO NOT use pretty-printing. DO NOT switch to compact array formats mid-loop.** Follow the EXACT script below.
+
+Loop the EXACT snippet below with `offset = 0, 5, 10, 15, ...` until the returned `done` flag is `true`. The return is FLAT (no pretty-print), 5 items per chunk, capped well under the 1000-char truncation limit:
 
 ```javascript
 (async (offset) => {
   const products = window.__favPayload?.products || [];
-  const chunk = products.slice(offset, offset + 30);
+  const chunk = products.slice(offset, offset + 5);
+  // FLAT JSON — no whitespace, no newlines, no nesting indent. Avoids line-count truncation.
   return JSON.stringify({
     offset,
     total: products.length,
@@ -363,46 +368,63 @@ Loop the snippet below with `offset = 0, 30, 60, ...` until the returned `done` 
     done: offset + chunk.length >= products.length,
     products: chunk
   });
-})(/* paste offset integer here, e.g., 0 */)
+})(/* paste offset integer, e.g., 0 */)
 ```
 
-Each chunk's tool-result is ~3KB (30 items × ~80 bytes + framing) — well under display truncation. When `done: true`, you have all products accumulated.
+Each chunk is ~600–800 chars on a single line — within the truncation limit regardless of how the terminal renders it.
 
-Then **one** call to get brands + unresolvedProductIds:
+For a ~100-item favorites list that's ~20 round trips. Accumulate the `products` arrays from each chunk into your own state until `done: true`.
+
+**Sanity check on every chunk:** verify `chunkCount === 5` (or `< 5` only when `done: true`). If a chunk returns fewer items unexpectedly, something is wrong — re-fetch that offset.
+
+### Step 6b-tail — One call for brands + unresolvedProductIds
+
+After all chunks are done, one final call:
 ```javascript
 JSON.stringify({
   synced_at: window.__favPayload.synced_at,
   brands: window.__favPayload.brands,
   unresolvedProductIds: window.__favPayload.unresolvedProductIds,
-  unresolvedCount: window.__favPayload.unresolvedProductIds.length
+  unresolvedCount: window.__favPayload.unresolvedProductIds.length,
+  brandCount: window.__favPayload.brands.length
 })
 ```
 
-Assemble the final object as:
+This is small (~brands and unresolved IDs only) — usually fits in one call. If `unresolvedCount > 100`, chunk this too (replace the inline arrays with `slice(offset, offset+30)`).
+
+### Step 6b-write — Write the assembled file
+
+Build the final object in your own state:
 ```json
 {
-  "synced_at": "<from Step 6a>",
-  "products": [ /* concatenation of all chunked products arrays */ ],
-  "unresolvedProductIds": [ /* from the brands call above */ ],
-  "brands": [ /* same */ ]
+  "synced_at": "<from the tail call above>",
+  "products": [ <concatenation of all chunked products arrays> ],
+  "unresolvedProductIds": [ <from tail call> ],
+  "brands": [ <from tail call> ]
 }
 ```
 
-**Write it to `~/Documents/WeBox/favorites.json`** with the Write tool.
+Use the **Write tool** to save it to `~/Documents/WeBox/favorites.json`.
 
 ### Step 6c — Same chunked pattern for hidden.json
 
-Identical structure, just substitute `__favPayload` → `__hidePayload`:
+Identical structure, substitute `__favPayload` → `__hidePayload`:
 
 ```javascript
 (async (offset) => {
   const products = window.__hidePayload?.products || [];
-  const chunk = products.slice(offset, offset + 30);
+  const chunk = products.slice(offset, offset + 5);
   return JSON.stringify({ offset, total: products.length, chunkCount: chunk.length, done: offset + chunk.length >= products.length, products: chunk });
 })(/* paste offset, e.g., 0 */)
 ```
 
-Then the brands/unresolved tail call, identical to 6b. Assemble and write `~/Documents/WeBox/hidden.json`.
+Tail call for brands/unresolved (substitute `__favPayload` → `__hidePayload`). Assemble and write `~/Documents/WeBox/hidden.json`.
+
+### Why this is necessary (don't be tempted to skip)
+
+Empirically verified 2026-05-21: a `javascript_tool` returning a 7438-byte single-string payload arrives in the model context truncated at ~870 characters, with the rest lost (verified by missing end-marker). The agent gets ONLY the visible portion — not "the full data with a cosmetic display abbreviation". Earlier guidance in this skill that suggested otherwise was incorrect; it has been removed.
+
+Smaller chunks = no truncation. The fixed 5-items-per-chunk + flat JSON keeps every chunk within limits regardless of product name length.
 
 ### Verification
 
