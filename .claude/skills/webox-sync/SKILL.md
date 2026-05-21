@@ -211,13 +211,15 @@ Same accumulate-on-page + return-summary pattern as webox-onboard Step 5. Stash 
         };
       }
       if (['Refunded', 'Cancelled'].includes(r.order?.status)) continue;  // keep Paid + Planned + PartialRefunded + Unpaid + OnHold
-      const items = (pkg.extItems || []).map(it => ({
-        productId: it.productId,
-        productSpecialId: it.productSpecialId,
-        portionId: it.portionId,
-        quantity: it.quantity,
-        price: (it.pricePerUnitCents ?? it.priceCents ?? 0) / 100
-      }));
+      const items = (pkg.extItems || []).map(it => {
+        const p = productById ? productById.get(it.productId) : null;
+        return {
+          productId: it.productId,
+          name: p?.extName?.enUs || null,
+          brand: p ? brandById?.get(p.brandId)?.extName?.enUs : null,
+          quantity: it.quantity
+        };
+      });
       active.push({
         orderId: 'No.' + r.order.id,
         dateShippingMs: pkg.dateShipping,

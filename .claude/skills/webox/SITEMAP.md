@@ -179,6 +179,172 @@ Cart lives in `localStorage.CartService_cartItemArrMap`. Angular owns the UI ren
 
 ---
 
+## Local File Schemas (`~/Documents/WeBox/`)
+
+Every file the skills write. Use these as the authoritative shape reference — and pair with the ingestion patterns below to read big ones efficiently.
+
+### `config.yaml`
+Schema-locked YAML with these top-level keys ONLY (validator in webox-onboard Step 7a enforces):
+```
+budget, budget_mode, validate_budget,
+confirm_before_order, default_meals, skip_weekends,
+avoid_repeat_days, history_window_days, allow_repeat_categories,
+restrictions, avoid_allergens, preferred_cuisines, cuisines_to_avoid,
+foods_i_like, foods_to_avoid,
+order_drinks, avoid_sugary_drinks, preferred_drinks
+```
+
+### `preferences.md`
+Free-form markdown. No schema. Read whole file, treat as soft constraint hints for the planner.
+
+### `user-profile.json` (< 1 KB)
+```json
+{ "id": 401264, "firstName": "...", "lastName": "...", "phone": "...", "email": "...", "timezone": "..." }
+```
+
+### `address-info.json` (< 1 KB)
+```json
+{ "addressId": 240212, "userAddressId": 459170, "kitchenId": 12838, "timezone": "America/Los_Angeles", "address1": "...", "city": "..." }
+```
+`addressId` is the canonical (used by all APIs); `userAddressId` is the per-user link record.
+
+### `shipping-windows.json` (< 2 KB)
+```json
+{
+  "synced_at": "ISO-8601",
+  "windows": {
+    "Lunch":  { "shippingTimeSectionId": 27274, "extFormCutoff": "08:00", "daysBefore": 0, ... },
+    "Dinner": { "shippingTimeSectionId": 27275, "extFormCutoff": "14:30", "daysBefore": 0, ... }
+  }
+}
+```
+
+### `favorites.json` / `hidden.json` (~20 KB each)
+```json
+{
+  "synced_at": "ISO-8601",
+  "products": [
+    { "id": 500874, "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "category": "Bentos" }
+  ],
+  "unresolvedProductIds": [202759, 183709],
+  "brands": []
+}
+```
+Read whole file. Derive ID Sets for fast lookup: `new Set([...products.map(p=>p.id), ...unresolvedProductIds])`.
+
+### `orders/YYYY-Www.json` (~5–20 KB each)
+```json
+{
+  "week": "2026-W21",
+  "week_starts": "2026-05-18",
+  "synced_at": "ISO-8601",
+  "orders": [
+    {
+      "date": "2026-05-21", "day": "Thu", "meal": "Dinner",
+      "orderId": "No.3259401", "status": "Paid", "total": 30.0,
+      "items": [
+        { "productId": 499852, "name": "Mongolian Beef Bento", "brand": "Xiangchuan Kitchen", "quantity": 1 }
+      ]
+    }
+  ]
+}
+```
+Order items intentionally **omit** `productSpecialId`, `portionId`, `price` — those live in the menu cache for Place Order body assembly, never consumed from order history.
+
+### `menu-cache/YYYY-MM-DD-Meal.json` (~1 MB — the big one)
+```json
+{
+  "cached_at": "ISO-8601",
+  "date": "2026-05-22",
+  "meal": "Lunch",
+  "kitchenId": 12838,
+  "items": [
+    {
+      "name": "...", "brand": "...", "price": 17.95, "category": "Bentos",
+      "rating": 4.5, "in_favorites": true,
+      "dietary": { "glutenFree": false, "dairyFree": false, "halal": false, "nutFree": false, "vegan": false, "vegetarian": false },
+      "stockQuantity": 0,
+      "productId": 499852, "productSpecialId": 56813079,
+      "portionId": 144251, "portionCount": 1
+    }
+  ]
+}
+```
+All 12 fields are consumed by the planner / Place Order body builder. Don't drop any.
+
+### `item-reviews.md`
+Free-form markdown with per-dish ratings + comments. No schema; agent appends dated lines.
+
+---
+
+## Ingestion patterns for big files
+
+The menu cache is ~1 MB / ~2000 items. **Don't `Read` it whole into context** — that's ~250K tokens and most items are irrelevant to the current plan. Instead, run a small Bash + Python filter first and read only the result.
+
+### Pattern A — filter menu cache by criteria, output ~30 candidates
+
+```bash
+uv run --no-project python3 << 'EOF'
+import json, os, sys
+cache = json.load(open(os.path.expanduser("~/Documents/WeBox/menu-cache/2026-05-22-Lunch.json")))
+restrictions  = ['vegetarian']           # from config.yaml
+max_price     = 30.00                    # from config.yaml budget
+recent_pids   = {499852, 203853}         # set of productIds eaten in last 7 days
+candidates = []
+for it in cache['items']:
+    if it['price'] > max_price: continue
+    if 'vegetarian' in restrictions and not it['dietary'].get('vegetarian') and not it['dietary'].get('vegan'): continue
+    if it['productId'] in recent_pids: continue  # variety
+    score = 0
+    if it['in_favorites']: score += 10
+    if it['rating']: score += it['rating']
+    candidates.append((score, it))
+candidates.sort(key=lambda x: -x[0])
+# Slim each item to plan-relevant fields, output top 30
+out = [{
+    "name": it["name"], "brand": it["brand"], "price": it["price"],
+    "category": it["category"], "rating": it["rating"], "in_favorites": it["in_favorites"],
+    "productId": it["productId"], "productSpecialId": it["productSpecialId"], "portionId": it["portionId"]
+} for _, it in candidates[:30]]
+json.dump(out, open("/tmp/webox-candidates.json","w"), indent=2)
+print(f"✓ wrote {len(out)} candidates to /tmp/webox-candidates.json")
+EOF
+```
+
+Then `Read /tmp/webox-candidates.json` (~5 KB) and pick from it. **The agent never reads the 1 MB file directly.**
+
+### Pattern B — count slot occupancy from order history (fast, no whole-file read)
+
+```bash
+uv run --no-project python3 << 'EOF'
+import json, glob, os, datetime
+today = datetime.date.today()
+windows = {}  # date+meal → orderId
+for f in glob.glob(os.path.expanduser("~/Documents/WeBox/orders/*.json")):
+    for o in json.load(open(f)).get("orders", []):
+        d = datetime.date.fromisoformat(o["date"])
+        if 0 <= (d - today).days <= 7:
+            windows[(o["date"], o["meal"])] = o.get("orderId")
+print(json.dumps(windows, indent=2))
+EOF
+```
+
+### Pattern C — quick lookup against favorites/hidden (small files; Read is fine)
+
+```python
+fav  = json.load(open(os.path.expanduser("~/Documents/WeBox/favorites.json")))
+hide = json.load(open(os.path.expanduser("~/Documents/WeBox/hidden.json")))
+fav_ids  = set(p["id"] for p in fav["products"])  | set(fav["unresolvedProductIds"])
+hide_ids = set(p["id"] for p in hide["products"]) | set(hide["unresolvedProductIds"])
+```
+
+### Rule of thumb
+
+- File < 30 KB → `Read` tool directly is fine (favorites, hidden, orders/<week>, address-info, user-profile, shipping-windows, config.yaml, preferences.md)
+- File > 100 KB → use Bash + Python to filter first, then `Read` the smaller result (menu cache, big concatenated orders dumps)
+
+---
+
 ## DOM patterns (legacy / fallback)
 
 The DOM patterns below were the primary mechanism in earlier versions. They still work and are useful for: cart UI interactions, debugging, and any case where the API path isn't available. **Prefer API where possible.**

@@ -93,8 +93,9 @@ Read week files overlapping `history_window_days` (typically last 4 weeks + curr
         timeShipping: pkg.timeShipping,
         total: o.order.totalCharge || 0,
         items: (pkg.extItems || []).map(it => ({
-          productId: it.productId, productSpecialId: it.productSpecialId, portionId: it.portionId,
-          quantity: it.quantity, price: (it.pricePerUnitCents ?? it.priceCents ?? 0) / 100
+          productId: it.productId,
+          quantity: it.quantity
+          // name/brand are added by the Python merge step using the menu cache as a lookup
         }))
       });
     }

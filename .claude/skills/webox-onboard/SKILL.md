@@ -183,13 +183,15 @@ The full order history for a long-time user can be 400+ orders × multiple items
           dateShippingMs: pkg.dateShipping,
           timeShipping: ts,
           total: o.order.totalCharge || 0,
-          items: (pkg.extItems || []).map(it => ({
-            productId: it.productId,
-            productSpecialId: it.productSpecialId,
-            portionId: it.portionId,
-            quantity: it.quantity,
-            price: (it.pricePerUnitCents ?? it.priceCents ?? 0) / 100
-          }))
+          items: (pkg.extItems || []).map(it => {
+            const p = productById ? productById.get(it.productId) : null;
+            return {
+              productId: it.productId,
+              name: p?.extName?.enUs || null,
+              brand: p ? brandById?.get(p.brandId)?.extName?.enUs : null,
+              quantity: it.quantity
+            };
+          })
         });
       }
     }
