@@ -34,9 +34,11 @@ If not logged in: ask user to log in. If `address-info.json` is missing locally:
 
 ---
 
-## Step 2: Refresh Favorites + Hidden Lists (with enrichment)
+## Step 2: Refresh Favorites + Hidden Lists (chunked, with diff)
 
-Refreshing requires the current menu's `products` array to resolve IDs → human-readable names. The warm-cache step (Step 4) fetches the menu anyway, so do these together. Order: menu fetch first, then enrich + diff.
+Refreshing requires the current menu's `products` array to resolve IDs → readable names. Use the **same Step-6a/6b/6c chunked pattern** as `webox-onboard`. Detailed scripts there; condensed below.
+
+### 2a — Fetch + enrich + stash, return summary only
 
 ```javascript
 (async (addrId, date) => {
@@ -63,23 +65,47 @@ Refreshing requires the current menu's `products` array to resolve IDs → human
     return b ? { id, name: b.extName?.enUs } : { id, name: null };
   });
   const now = new Date().toISOString();
-  const favEn = enrichP(favR.data?.productIdList);
+  const favEn  = enrichP(favR.data?.productIdList);
   const hideEn = enrichP(hideR.data?.productIdList);
+  window.__favPayload  = { synced_at: now, products: favEn.products,  unresolvedProductIds: favEn.unresolved,  brands: enrichB(favR.data?.brandIdList) };
+  window.__hidePayload = { synced_at: now, products: hideEn.products, unresolvedProductIds: hideEn.unresolved, brands: enrichB(hideR.data?.brandIdList) };
+  window.__weboxMenuRaw = menuR.data;  // available for Step 4 warm-cache
   return JSON.stringify({
-    favorites: { synced_at: now, products: favEn.products, unresolvedProductIds: favEn.unresolved, brands: enrichB(favR.data?.brandIdList) },
-    hidden:    { synced_at: now, products: hideEn.products, unresolvedProductIds: hideEn.unresolved, brands: enrichB(hideR.data?.brandIdList) },
-    menuRaw: menuR.data  // pass through so Step 4 can use the same fetch for warm-cache
+    favCount: favEn.products.length, favUnresolved: favEn.unresolved.length, favBrandCount: (favR.data?.brandIdList||[]).length,
+    hideCount: hideEn.products.length, hideUnresolved: hideEn.unresolved.length, hideBrandCount: (hideR.data?.brandIdList||[]).length,
+    synced_at: now
   });
-})('<addrId>', '<tomorrow>')
+})(/* addrId integer */, /* 'YYYY-MM-DD' */)
 ```
 
-**Diff before overwriting.** Read the existing `favorites.json` / `hidden.json` (compute the set of `products[].id` to compare). Compute symmetric diff against the new ID lists, surface changes in the Step 6 summary:
-- New favorites: products in the new list but not the old → these are recent hearts
-- Removed favorites: products in the old list but not the new → user un-hearted
+### 2b/2c — Chunked retrieval (30 products per call)
 
-Then write the new enriched objects to `favorites.json` and `hidden.json`.
+```javascript
+// favorites chunk; loop offset = 0, 30, 60, ... until done: true
+(async (offset) => {
+  const products = window.__favPayload?.products || [];
+  const chunk = products.slice(offset, offset + 30);
+  return JSON.stringify({ offset, total: products.length, chunkCount: chunk.length, done: offset + chunk.length >= products.length, products: chunk });
+})(/* offset integer */)
+```
 
-**Schema (same as onboard Step 6):**
+Then tail call for brands + unresolved:
+```javascript
+JSON.stringify({ synced_at: window.__favPayload.synced_at, brands: window.__favPayload.brands, unresolvedProductIds: window.__favPayload.unresolvedProductIds })
+```
+
+Identical for `__hidePayload` → `hidden.json`.
+
+### 2d — Diff vs the existing local file before overwriting
+
+Before writing the new `favorites.json`, read the old one (if it exists) and compute the symmetric diff on `products[].id`. Surface in the Step 6 summary:
+- Hearted since last sync: products in new list but not old
+- Unhearted since last sync: products in old list but not new
+
+Then write the new enriched objects.
+
+### Schema (same as onboard Step 6)
+
 ```json
 {
   "synced_at": "ISO-8601",
@@ -90,6 +116,14 @@ Then write the new enriched objects to `favorites.json` and `hidden.json`.
   "brands": []
 }
 ```
+
+### Verification
+
+```bash
+python3 -c "import json; d=json.load(open('$HOME/Documents/WeBox/favorites.json')); print('favorites:', len(d['products']), 'products,', len(d['unresolvedProductIds']), 'unresolved')"
+```
+
+Must match the counts from 2a. If short, a chunk got dropped — re-run from the missing offset.
 
 ---
 

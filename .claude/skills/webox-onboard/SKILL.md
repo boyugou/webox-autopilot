@@ -291,17 +291,19 @@ For each active order, group by `isoWeek(dateShipping)` and write to `~/Document
 
 ## Step 6: Fetch Menu + Enrich Favorites/Hidden + Build Warm Cache
 
-This step enriches favorites + hidden ID lists into human-readable `{id, name, brand, category}` objects using the menu API's `products` array as a lookup.
+This step enriches favorites + hidden ID lists into human-readable `{id, name, brand, category}` objects using the menu API's `products` array as a lookup. **Run the three JS snippets below in order — they are designed to keep each tool-result under the safe display limit.**
 
-> **CRITICAL — about `javascript_tool` return values:**
-> The string returned by `javascript_tool` IS the full payload. You DO NOT need to download it to a file. **Never call URL-blob-download tricks. Never look in `~/Downloads`.** The display in the terminal truncates long results around ~1KB for readability — but the result the JS function returned reaches you in full and you can write it directly with the `Write` tool. If you find yourself wanting to write to `/Users/<x>/Downloads/...` from a JS snippet, stop — you're working around a non-existent limit.
+> **About `javascript_tool` return values:**
+> The string returned by `javascript_tool` lands in the tool_result your model sees. The terminal display abbreviates long results with `[TRUNCATED]`, **but the abbreviation is cosmetic** — your tool_result text contains the full payload (within Claude Code's tool-result cap). The pattern below sidesteps the question entirely by chunking the output explicitly so no single return exceeds ~5KB.
 >
-> If a JS call would genuinely return >100KB, split it into smaller calls instead. This skill's calls are all designed to fit comfortably.
+> **Never write data to `~/Downloads`** or use blob/URL-download tricks from JS. Use the pattern below.
+
+### Step 6a — Fetch + enrich + stash, return summary only
 
 ```javascript
 (async () => {
   const tmr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
-  const addrId = /* from address-info.json */;
+  const addrId = /* paste integer from address-info.json's addressId */;
   const [menuR, favR, hideR] = await Promise.all([
     fetch(`/api/productSpecials/v8/address/${addrId}/date/${tmr}`, { credentials: 'include' }).then(r => r.json()),
     fetch('/api/fav/my', { credentials: 'include' }).then(r => r.json()),
@@ -327,19 +329,93 @@ This step enriches favorites + hidden ID lists into human-readable `{id, name, b
   const favE  = enrichProducts(favR.data?.productIdList);
   const hideE = enrichProducts(hideR.data?.productIdList);
   const now = new Date().toISOString();
-  // Also stash the raw menu data + maps on window so an OPTIONAL Step 7 can build warm-cache without re-fetching.
-  // Total return payload here: ~25-50KB (favorites + hidden enriched), well within tool limits.
-  window.__weboxMenuRaw = menuR.data;
+  // Stash the FULL enriched objects on window for chunked retrieval below.
+  window.__favPayload  = { synced_at: now, products: favE.products,  unresolvedProductIds: favE.unresolved,  brands: enrichBrands(favR.data?.brandIdList) };
+  window.__hidePayload = { synced_at: now, products: hideE.products, unresolvedProductIds: hideE.unresolved, brands: enrichBrands(hideR.data?.brandIdList) };
+  window.__weboxMenuRaw = menuR.data;  // For any optional follow-up
   return JSON.stringify({
-    favorites: { synced_at: now, products: favE.products, unresolvedProductIds: favE.unresolved, brands: enrichBrands(favR.data?.brandIdList) },
-    hidden:    { synced_at: now, products: hideE.products, unresolvedProductIds: hideE.unresolved, brands: enrichBrands(hideR.data?.brandIdList) }
+    favCount: favE.products.length,
+    favUnresolved: favE.unresolved.length,
+    favBrandCount: (favR.data?.brandIdList || []).length,
+    hideCount: hideE.products.length,
+    hideUnresolved: hideE.unresolved.length,
+    hideBrandCount: (hideR.data?.brandIdList || []).length,
+    synced_at: now
   });
 })()
 ```
 
-Write two files:
+This returns a small summary (~200 bytes). Record `favCount`, `hideCount`, and `synced_at` from the response — you'll use them in Step 6c.
 
-**`~/Documents/WeBox/favorites.json`** ← `favorites`:
+### Step 6b — Pull favorites in chunks of 30, build favorites.json incrementally
+
+Loop the snippet below with `offset = 0, 30, 60, ...` until the returned `done` flag is `true`. Accumulate the `products` arrays in your own state.
+
+```javascript
+(async (offset) => {
+  const products = window.__favPayload?.products || [];
+  const chunk = products.slice(offset, offset + 30);
+  return JSON.stringify({
+    offset,
+    total: products.length,
+    chunkCount: chunk.length,
+    done: offset + chunk.length >= products.length,
+    products: chunk
+  });
+})(/* paste offset integer here, e.g., 0 */)
+```
+
+Each chunk's tool-result is ~3KB (30 items × ~80 bytes + framing) — well under display truncation. When `done: true`, you have all products accumulated.
+
+Then **one** call to get brands + unresolvedProductIds:
+```javascript
+JSON.stringify({
+  synced_at: window.__favPayload.synced_at,
+  brands: window.__favPayload.brands,
+  unresolvedProductIds: window.__favPayload.unresolvedProductIds,
+  unresolvedCount: window.__favPayload.unresolvedProductIds.length
+})
+```
+
+Assemble the final object as:
+```json
+{
+  "synced_at": "<from Step 6a>",
+  "products": [ /* concatenation of all chunked products arrays */ ],
+  "unresolvedProductIds": [ /* from the brands call above */ ],
+  "brands": [ /* same */ ]
+}
+```
+
+**Write it to `~/Documents/WeBox/favorites.json`** with the Write tool.
+
+### Step 6c — Same chunked pattern for hidden.json
+
+Identical structure, just substitute `__favPayload` → `__hidePayload`:
+
+```javascript
+(async (offset) => {
+  const products = window.__hidePayload?.products || [];
+  const chunk = products.slice(offset, offset + 30);
+  return JSON.stringify({ offset, total: products.length, chunkCount: chunk.length, done: offset + chunk.length >= products.length, products: chunk });
+})(/* paste offset, e.g., 0 */)
+```
+
+Then the brands/unresolved tail call, identical to 6b. Assemble and write `~/Documents/WeBox/hidden.json`.
+
+### Verification
+
+After writing, sanity-check the files:
+```bash
+python3 -c "import json; d = json.load(open('$HOME/Documents/WeBox/favorites.json')); print('favorites:', len(d['products']), 'products,', len(d['unresolvedProductIds']), 'unresolved')"
+python3 -c "import json; d = json.load(open('$HOME/Documents/WeBox/hidden.json'));    print('hidden:',    len(d['products']), 'products,', len(d['unresolvedProductIds']), 'unresolved')"
+```
+
+The counts must match what Step 6a reported. If they don't, something was lost mid-chunk — re-run Step 6b/6c from where the count diverged.
+
+### Schemas
+
+**`~/Documents/WeBox/favorites.json`**:
 ```json
 {
   "synced_at": "2026-05-21T14:30:00Z",
@@ -352,13 +428,20 @@ Write two files:
 }
 ```
 
-**`~/Documents/WeBox/hidden.json`** ← `hidden` (same shape)
+**`~/Documents/WeBox/hidden.json`** — same shape.
 
-**Skip the warm menu-cache** during onboarding. The first call to `/webox-order` will fetch the menu in ~1 second on demand. The 1-second saving doesn't justify shipping a 400KB payload back through the tool layer.
+**Skip the warm menu-cache.** The first `/webox-order` call fetches the menu on demand (~1 second). Not worth shipping a ~400KB payload at onboard.
 
-**Why favorites.json is human-readable:** open it in Finder and see "Mongolian Beef Bento — Xiangchuan Kitchen" rather than "500874". The bare ID Set is derivable in JS as `new Set(favorites.products.map(p => p.id).concat(favorites.unresolvedProductIds))`.
+### Why this is human-readable
 
-**Unresolved IDs:** hearted/hidden products that no longer appear in the current menu (brand rotated out, etc.). Preserved as bare IDs so the data isn't lost. To resolve names later: `POST /api/products` with the ID list.
+Open `favorites.json` in Finder and see "Mongolian Beef Bento — Xiangchuan Kitchen", not "500874". The bare ID Set used by selection logic is derivable in JS:
+```js
+const favIds = new Set(favorites.products.map(p => p.id).concat(favorites.unresolvedProductIds));
+```
+
+### About `unresolvedProductIds`
+
+Items the user hearted (or hid) in the past but that no longer appear in the current menu — brand rotated out, item discontinued, etc. We keep their IDs so the data isn't lost; if you need their names later, `POST /api/products` with the ID list resolves them.
 
 ---
 
