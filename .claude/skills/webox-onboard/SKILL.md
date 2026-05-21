@@ -449,11 +449,32 @@ Items the user hearted (or hid) in the past but that no longer appear in the cur
 
 ### 7a. Parse and write preferences
 
-The canonical template is `preferences.md` in the webox-autopilot repo root. Read it and write the exact same content to `~/Documents/WeBox/preferences.md`, **only changing values the user explicitly mentioned in their onboarding reply**.
+The canonical template is `~/.claude/skills/webox-onboard/preferences.md` (installed alongside this skill, or fetch it from the webox-autopilot repo root). **You MUST copy the template verbatim, then change ONLY the values of the existing fields.** Do not invent new fields. Do not rename existing fields. Do not change the structure.
 
-#### CRITICAL: defaults are sacred
+#### CRITICAL: schema is fixed
 
-For any field the user did not mention, **keep the template default exactly as-is**. Don't infer or "improve":
+**Bad agent behavior we have seen and must not repeat:** previous runs produced files with fabricated fields like `target_per_meal`, `soft_cap`, `strictly_avoid`, `prefer_instead`, `chinese_target_per_week`, `per_meal_structure`. **None of these exist in the schema.** They look reasonable but they break every downstream skill that reads `preferences.md` and expects the canonical field names.
+
+The complete set of allowed top-level keys (all from the template — no others):
+- `budget`, `budget_mode`, `validate_budget`
+- `confirm_before_order`, `default_meals`, `skip_weekends`
+- `avoid_repeat_days`, `history_window_days`, `allow_repeat_categories`, `allow_repeat_patterns`
+- `category_mode`, `category_list`
+- `restrictions`
+- `avoid_allergens`
+- `preferred_cuisines`, `cuisines_to_avoid`
+- `foods_i_like`, `foods_to_avoid`
+- `order_drinks`, `avoid_sugary_drinks`, `preferred_drinks`
+
+**Procedure:**
+1. Read the canonical `preferences.md` template (find it via `find ~/.claude/skills/webox-onboard -name preferences.md -maxdepth 3 -type f` or refetch from the repo).
+2. Write the **complete content** of that file to `~/Documents/WeBox/preferences.md`.
+3. For each value the user explicitly mentioned in their onboarding reply (and ONLY those values), modify in place using the canonical field name.
+4. Anything that doesn't fit a structured field → append as free-text bullets in the `## Notes` section at the bottom.
+
+#### Defaults are sacred
+
+For any field the user did not mention, keep the template default exactly as-is. Don't infer or "improve":
 - Don't downgrade the default budget because the user "sounds frugal"
 - Don't switch `confirm_before_order` to true because the user seems cautious
 - Don't add `vegetarian` because the user mentioned liking salad
@@ -461,7 +482,48 @@ For any field the user did not mention, **keep the template default exactly as-i
 
 Only change a field if the user clearly named it or a synonym ("budget"/"spend"/"上限" → `budget`; "vegetarian"/"vegan"/"no meat" → `restrictions`; etc.).
 
-Free-text observations that don't map to a structured field go into the `## Notes` section at the bottom (preserve the template's helper comment above it).
+#### Field-mapping cheat sheet
+
+When parsing the user's free-text onboarding reply, map their phrases to canonical fields like this — and **never invent a new field even if the existing one feels imperfect**:
+
+| User says (any language) | Canonical field | How to encode |
+|---|---|---|
+| budget / spend / 上限 / 预算 | `budget` | Numeric (e.g., 25.00, 30.00). Cap is always hard — the planner never exceeds it. |
+| "use the full budget" / "尽可能用到满" / "fill up to budget" | `budget_mode: spend-up-to` | This IS the default. Try to fill with appropriate fillers. (`ceiling-only` = best picks within cap, no filling.) |
+| sugary drinks / sodas / 含糖饮料 / 汽水 / 奶茶 / boba | `avoid_sugary_drinks: true` + add patterns to `foods_to_avoid` (e.g., "soda", "boba", "milk tea") |
+| yogurt is no | Add `yogurt` to `foods_to_avoid`. Also remove "yogurt" from `allow_repeat_patterns` if user wants to never see it. |
+| raw fish / sashimi / 生鱼 / 生食 | Add `raw fish`, `sashimi`, `salmon sashimi`, `tuna sashimi`, `ceviche`, `tartare` to `foods_to_avoid` |
+| 健康 / healthy / lean | Add `fried`, `deep-fried`, `heavily oily` to `foods_to_avoid` |
+| 中餐 / Chinese / "at least N Chinese meals" | `preferred_cuisines: [Chinese, ...]`. The "5/10 Chinese" intent goes in `## Notes` (no structured field for ratios). |
+| fresh fruit / milk preferred for filling | Add `fresh fruit`, `milk` to `foods_i_like`. Add `yogurt` to `foods_to_avoid`. |
+| vegetarian / vegan / halal / kosher / gluten-free | `restrictions: [<one or more>]` |
+| nut allergy / shellfish / dairy / eggs | `avoid_allergens: [<allergen>]` |
+| "don't ask, just order" / "no confirmation" / 不用问 | `confirm_before_order: false` (already default) |
+| "show me the plan first" / 让我确认 | `confirm_before_order: true` |
+| "skip weekends" / 不要周末 | `skip_weekends: true` (already default) |
+| "include weekends" / 要周末 | `skip_weekends: false` |
+| 一周吃 N 顿 / portion preferences / 主餐 vs sides | Free-text in `## Notes` (no structured field for meal composition rules) |
+
+Anything that genuinely doesn't fit a structured field goes into `## Notes` as a free-text bullet. The downstream `webox-order` skill reads `## Notes` and applies the intent on a best-effort basis.
+
+#### Verification before declaring done
+
+After writing `~/Documents/WeBox/preferences.md`, run:
+```bash
+python3 -c "
+import re, sys
+with open('$HOME/Documents/WeBox/preferences.md') as f: text = f.read()
+allowed = {'budget','budget_mode','validate_budget','confirm_before_order','default_meals','skip_weekends',
+           'avoid_repeat_days','history_window_days','allow_repeat_categories','allow_repeat_patterns',
+           'category_mode','category_list','restrictions','avoid_allergens','preferred_cuisines','cuisines_to_avoid',
+           'foods_i_like','foods_to_avoid','order_drinks','avoid_sugary_drinks','preferred_drinks'}
+keys = set(re.findall(r'^(\w+):', text, re.M))
+extra = keys - allowed
+print('UNKNOWN KEYS:' if extra else 'OK: all keys canonical.', sorted(extra) if extra else '')
+"
+```
+
+If anything is reported as UNKNOWN, the file is off-schema — rewrite it from the template before finishing.
 
 ### 7b. Create empty item-reviews.md (if missing)
 

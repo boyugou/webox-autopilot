@@ -45,6 +45,13 @@ for skill in "${CURRENT_SKILLS[@]}"; do
   echo "  ✓ $skill"
 done
 
+# Place the canonical preferences template inside webox-onboard's skill dir so the agent
+# can read it locally (instead of refetching from GitHub at onboard time).
+if [ -f "$SCRIPT_DIR/preferences.md" ]; then
+  cp "$SCRIPT_DIR/preferences.md" "$CLAUDE_SKILLS/webox-onboard/preferences.md"
+  echo "  ✓ preferences.md template → webox-onboard/"
+fi
+
 # Create data directory (do NOT copy a template preferences.md — let webox-onboard create it
 # from the user's actual answers. Otherwise webox-onboard would skip onboarding.)
 mkdir -p "$WEBOX_DIR"
