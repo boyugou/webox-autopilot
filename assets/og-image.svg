@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="webox-autopilot">
+  <rect width="1200" height="630" fill="#fbfcf9"/>
+  <rect x="72" y="74" width="1060" height="488" rx="20" fill="#ffffff" stroke="#dfe7dd"/>
+  <rect x="820" y="124" width="240" height="320" rx="14" fill="#e3f4ea"/>
+  <rect x="860" y="166" width="160" height="22" rx="6" fill="#0f7b56"/>
+  <rect x="860" y="214" width="160" height="18" rx="6" fill="#c7e86b"/>
+  <rect x="860" y="256" width="120" height="18" rx="6" fill="#f3a35c"/>
+  <text x="126" y="190" fill="#14231d" font-family="Inter, Arial, sans-serif" font-size="72" font-weight="800">webox-autopilot</text>
+  <text x="126" y="270" fill="#14231d" font-family="Inter, Arial, sans-serif" font-size="46" font-weight="700">API-first WeBox ordering</text>
+  <text x="126" y="342" fill="#5f6c64" font-family="Inter, Arial, sans-serif" font-size="30">Tell Claude what you want.</text>
+  <text x="126" y="386" fill="#5f6c64" font-family="Inter, Arial, sans-serif" font-size="30">Let the skill plan, place, and remember.</text>
+  <rect x="126" y="440" width="250" height="64" rx="10" fill="#0f7b56"/>
+  <text x="164" y="481" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="700">View on GitHub</text>
+</svg>

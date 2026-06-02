@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>webox-autopilot | Claude Code skill for API-first WeBox meal ordering</title>
+    <meta name="description" content="Order WeBox meals from plain language with Claude Code. webox-autopilot is an API-first skill suite for budget-aware, preference-aware, transparent meal planning and ordering.">
+    <meta name="keywords" content="WeBox, Claude Code, Claude skill, meal ordering automation, API-first food ordering, webox-autopilot">
+    <meta name="author" content="webox-autopilot contributors">
+    <meta name="robots" content="index, follow, max-image-preview:large">
+    <meta name="theme-color" content="#0f7b56">
+    <link rel="canonical" href="https://boyugou.github.io/webox-autopilot/">
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+    <link rel="manifest" href="site.webmanifest">
+
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="webox-autopilot">
+    <meta property="og:description" content="A Claude Code skill suite that orders WeBox meals from natural language using WeBox's JSON API.">
+    <meta property="og:url" content="https://boyugou.github.io/webox-autopilot/">
+    <meta property="og:image" content="https://boyugou.github.io/webox-autopilot/assets/og-image.svg">
+    <meta property="og:image:alt" content="webox-autopilot product preview with weekly meal planning and API-first ordering.">
+
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="webox-autopilot">
+    <meta name="twitter:description" content="Tell Claude what you want. Let an API-first skill plan and place WeBox orders within your rules.">
+    <meta name="twitter:image" content="https://boyugou.github.io/webox-autopilot/assets/og-image.svg">
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareSourceCode",
+        "name": "webox-autopilot",
+        "description": "Claude Code skills for API-first WeBox meal ordering from natural language.",
+        "codeRepository": "https://github.com/boyugou/webox-autopilot",
+        "programmingLanguage": ["Markdown", "JavaScript", "Bash"],
+        "license": "https://www.apache.org/licenses/LICENSE-2.0",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS"
+      }
+    </script>
+
+    <link rel="preload" href="styles.css" as="style">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="webox-autopilot home">
+        <span class="brand-mark" aria-hidden="true">wa</span>
+        <span>webox-autopilot</span>
+      </a>
+      <nav class="nav" aria-label="Primary navigation">
+        <a href="#skills">Skills</a>
+        <a href="#workflow">Workflow</a>
+        <a href="#install">Install</a>
+        <a href="https://github.com/boyugou/webox-autopilot">GitHub</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <h1>Order WeBox meals by telling Claude what you want.</h1>
+          <p>
+            webox-autopilot is a Claude Code skill suite that turns plain-language meal requests
+            into API-backed WeBox orders. It plans around budget, variety, dietary rules,
+            favorites, hidden items, and your own dish notes.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="https://github.com/boyugou/webox-autopilot">View on GitHub</a>
+            <a class="button secondary" href="#install">Read setup</a>
+          </div>
+        </div>
+        <div class="hero-visual" aria-label="Product preview">
+          <div class="command-panel">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+            <p>Order lunch and dinner Mon-Fri next week, Chinese and Japanese only.</p>
+          </div>
+          <div class="calendar-card">
+            <div class="card-head">
+              <strong>Next week</strong>
+              <span>budget-aware</span>
+            </div>
+            <div class="meal-grid">
+              <span>Mon</span><b>Lunch</b><em>API planned</em>
+              <span>Tue</span><b>Dinner</b><em>no repeats</em>
+              <span>Wed</span><b>Lunch</b><em>favorites ok</em>
+              <span>Thu</span><b>Dinner</b><em>POST ready</em>
+            </div>
+          </div>
+          <div class="api-card">
+            <code>GET /api/productSpecials/v8</code>
+            <code>POST /api/orders</code>
+            <small>No DOM scraping. No scroll loops.</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="proof-strip" aria-label="Core benefits">
+        <article>
+          <strong>~1 second</strong>
+          <span>full menu fetch through WeBox JSON APIs</span>
+        </article>
+        <article>
+          <strong>7 skills</strong>
+          <span>focused workflows for onboard, order, sync, favorites, reset, update, and ad-hoc tasks</span>
+        </article>
+        <article>
+          <strong>Plain files</strong>
+          <span>preferences, history, favorites, hidden items, and reviews stay readable locally</span>
+        </article>
+      </section>
+
+      <section class="section split" id="skills">
+        <div>
+          <h2>A skill suite for real ordering, not browsing.</h2>
+          <p>
+            The skills use the same session as your logged-in Chrome browser, then work directly
+            with WeBox endpoints for menus, favorites, hidden items, order history, and order placement.
+          </p>
+        </div>
+        <div class="feature-list">
+          <article><h3>API-first</h3><p>Fetch a complete menu in one structured call and place each meal slot with one sequential order POST.</p></article>
+          <article><h3>Preference memory</h3><p>Budget, dietary rules, cuisine bias, avoid lists, favorites, and dish reviews are read every order session.</p></article>
+          <article><h3>Transparent state</h3><p>Local data lives in editable JSON, YAML, and Markdown under Documents instead of a hidden black box.</p></article>
+          <article><h3>Careful automation</h3><p>Sequential writes, optional confirmation, order-history refreshes, and budget validation reduce avoidable mistakes.</p></article>
+        </div>
+      </section>
+
+      <section class="workflow" id="workflow">
+        <div class="section-heading">
+          <h2>From a sentence to a placed order.</h2>
+          <p>Designed for people who already use WeBox and want the repetitive decision work handled with clear rules.</p>
+        </div>
+        <div class="steps">
+          <article><span>01</span><h3>Onboard once</h3><p>Fetch profile, address, favorites, hidden items, order history, and shipping windows through the API.</p></article>
+          <article><span>02</span><h3>Say the plan</h3><p>Ask for tomorrow's lunch, a full weekday schedule, favorites only, milks, or an ad-hoc menu search.</p></article>
+          <article><span>03</span><h3>Apply your rules</h3><p>Honor budgets, meal defaults, weekend skipping, cuisine preferences, allergens, avoid lists, and recent history.</p></article>
+          <article><span>04</span><h3>Place and learn</h3><p>Post orders through the API, save week files, and record feedback like “too salty” or “never again.”</p></article>
+        </div>
+      </section>
+
+      <section class="section data-section">
+        <div class="files-card">
+          <div class="file-row"><span>config.yaml</span><em>budget, dietary rules, ordering behavior</em></div>
+          <div class="file-row"><span>preferences.md</span><em>soft constraints in natural language</em></div>
+          <div class="file-row"><span>favorites.json</span><em>hearted items and brands</em></div>
+          <div class="file-row"><span>orders/YYYY-Www.json</span><em>active weekly order history</em></div>
+          <div class="file-row"><span>item-reviews.md</span><em>personal dish ratings and notes</em></div>
+        </div>
+        <div>
+          <h2>Your rules stay inspectable.</h2>
+          <p>
+            webox-autopilot is intentionally transparent. The skill writes caches and preferences
+            as ordinary local files, so you can inspect, edit, back up, or reset them without a dashboard.
+          </p>
+        </div>
+      </section>
+
+      <section class="install" id="install">
+        <div>
+          <h2>Install once. Run from Claude Code.</h2>
+          <p>
+            Requirements: Claude Code, Chrome with Claude in Chrome, an active WeBox account,
+            and a logged-in browser session. The skill never asks for WeBox credentials.
+          </p>
+        </div>
+        <div class="terminal" aria-label="Install commands">
+          <button class="copy-button" type="button" data-copy-target="install-command">Copy</button>
+          <pre><code id="install-command">git clone https://github.com/boyugou/webox-autopilot.git /tmp/webox-autopilot &amp;&amp; bash /tmp/webox-autopilot/install.sh &amp;&amp; rm -rf /tmp/webox-autopilot</code></pre>
+          <pre><code>claude --chrome
+/webox-onboard</code></pre>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Apache-2.0 open source.</span>
+      <a href="https://github.com/boyugou/webox-autopilot">github.com/boyugou/webox-autopilot</a>
+    </footer>
+    <script src="script.js"></script>
+  </body>
+</html>
