@@ -154,16 +154,25 @@ for path in glob.glob(f"{out_dir}/*.json"):
     except Exception: pass
 
 now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+def entry_key(e):
+    # Active orders are keyed by orderId. Planned entries (Step 5) and any older
+    # records have no orderId — key them by their (date, meal) slot so the merge
+    # never KeyErrors and a real order can later supersede the planned placeholder.
+    return e.get("orderId") or f"planned::{e.get('date')}::{e.get('meal')}"
+
 n_upserts, n_evicts = 0, 0
 for week in affected_weeks:
     path = f"{out_dir}/{week}.json"
     if os.path.exists(path):
         cur = json.load(open(path))
-        existing = {e["orderId"]: e for e in cur.get("orders", []) if e.get("orderId") not in dead_orderIds}
+        existing = {entry_key(e): e for e in cur.get("orders", []) if e.get("orderId") not in dead_orderIds}
         n_evicts += len(cur.get("orders", [])) - len(existing)
     else:
         existing = {}
     for e in upserts_by_week.get(week, []):
+        # A real fetched order supersedes any planned placeholder for the same slot.
+        existing.pop(f"planned::{e.get('date')}::{e.get('meal')}", None)
         if e["orderId"] not in existing:
             n_upserts += 1
         existing[e["orderId"]] = e
@@ -333,11 +342,11 @@ Build a complete plan for ALL requested slots **before placing anything**.
 Budget validation: `unit_price × qty`.
 
 **Respect `stockQuantity` at plan time.** Each cached menu item carries `stockQuantity`:
-- `stockQuantity === 0` → **unlimited stock** (the item isn't being tracked). Order any quantity.
+- `stockQuantity === 0` → **untracked, usually orderable — but not a guarantee.** Zero means WeBox isn't counting this item's inventory, not that supply is infinite. Kitchen-prepared dishes (noodles, bento, soups, kitchen salads) with `stockQuantity: 0` are reliable. **Some** packaged perishables (specific SKUs of bottled milk/water, fresh produce, packaged eggs) are **phantom stock**: the menu lists them `Instock` with `stockQuantity: 0`, yet the POST fails with "out of stock, remaining amount: 0". This is item-specific and sporadic — many packaged items order fine — and it can't be predicted from the menu payload. So plan normally, but don't *promise* "order any quantity" for a packaged perishable, and let Step 6 swap it on failure.
 - `stockQuantity > 0` → **finite remaining**. NEVER plan a quantity larger than `stockQuantity`. If the user explicitly asks for more (e.g., "5 fuji apples" but only 2 in stock), say so up front:
   > Only 2 Fuji Apples available — picking those + filling the rest with [substitute] to stay within budget?
 
-This avoids POST-time stock failures for low-stock items.
+This avoids POST-time stock failures for low-stock items. Phantom-stock failures (`stockQuantity: 0` packaged goods) can't be predicted from the menu — Step 6 handles them by substituting (a kitchen-made item is the safe fallback) rather than retrying the same item.
 
 ### Selection priority
 
@@ -364,6 +373,7 @@ This avoids POST-time stock failures for low-stock items.
    - `in_favorites: true` items get a small bias
    - Fill remaining budget with complementary fillers if `spend-up-to`
    - Prompt-requested cuisine restricts the MAIN only — fillers can come from any category
+   - **Kitchen-made fillers are first-class.** Soups, kitchen salads, and veg sides are reliable fillers, not just 荤素-balance add-ons — treat them as equal to packaged drinks/produce when filling the budget. Packaged perishables (bottled milk/water, fresh produce) are fine to use, but a minority phantom-fail at POST (see stock note above); if one does, Step 6 swaps it. There's no need to avoid packaged fillers preemptively — just don't lean on them so heavily that a slot's whole filler budget rides on items that might bounce.
 
 ### Item reviews — how to read
 
@@ -615,12 +625,13 @@ For each slot in the plan, call `POST /api/orders` with the body assembled from:
 
 **If `shipping-windows.json` is empty or missing the meal type** (rare — only on brand-new accounts with zero history): fall back to the DOM path for that one order (navigate to `/?date=X&shippingTime=Y`, DOM-click an item, navigate to `/checkout`, intercept the Place Order POST to learn the `shippingTimeSectionId`, then write it to `shipping-windows.json` for future orders). After the first successful order, all subsequent orders use the API path.
 
-**On success** (`code === 1`, `orderId` returned):
-- Update the per-week JSON entry: remove `planned: true`, add `"orderId": "No.<id>"`
-- Print: `✅ Order placed! Order #<orderId> — <date> <meal> — $<total>`
+**On success** (`code === 1` — full stop; `orderId` is best-effort and often absent):
+- `j.data?.id` is frequently `undefined` even on a fully successful order (a successful POST commonly returns just `{"status":200,"code":1}`). **A missing orderId is NOT a failure — never retry on it.** Retrying because `orderId` was undefined risks a duplicate charge.
+- Update the per-week JSON entry: remove `planned: true`. Add `"orderId": "No.<id>"` only if `j.data?.id` is present; otherwise mark the slot placed without one (e.g. `"orderId": null, "placed": true`) so the slot still reads as occupied.
+- Print: `✅ Order placed — <date> <meal> — $<total>` (append `Order #<id>` only when an id came back).
 - **Move on immediately. Do NOT verify by polling the orders list.**
 
-> **CRITICAL — `code: 1` is the only success signal you need.** The order is placed in WeBox's database the moment the POST returns successfully. Do NOT then call `/api/orders/list?status=Planned,OnHold,Unpaid` or any other "did it work?" query.
+> **CRITICAL — `code: 1` is the only success signal you need.** The order is placed in WeBox's database the moment the POST returns `code: 1`, with or without an `orderId` in the response. Do NOT then call `/api/orders/list?status=Planned,OnHold,Unpaid` or any other "did it work?" query, and do NOT treat a missing `orderId` as a reason to re-POST.
 >
 > Real failure mode observed: agent placed an order (POST returned `code: 1`, orderId in hand), then polled `/api/orders/list?status=Planned%2COnHold%2CUnpaid` to "verify" — but a fresh paid order's status is `Paid` (NOT in that filter), and the API has cache lag besides. The agent saw `totalCount: 0`, panicked, retried, polled more, got stuck for minutes while the order was already done.
 >
@@ -639,7 +650,9 @@ WeBox menu data can lag behind real stock by minutes. An item the menu API showe
 2. **Locate the failing item in the fresh menu**:
    - If it's now `stockStatus === "outofstock"` or absent → item is genuinely gone. Find a **substitute**: same `category`, similar `price` (±$1.00), prefer `in_favorites: true`. Announce the swap to the user in one sentence (e.g., "Apple Fuji out of stock. Swapping in Apple Gala (same price, same brand category)."). Then retry POST with the substitute.
    - If it's still listed with `stockQuantity > 0 && stockQuantity < requestedQty` → reduce the qty to `stockQuantity` and refill the leftover budget with a different filler. Retry POST.
-   - If it's still listed as in-stock and stockQuantity is 0/unlimited → the menu data was right but WeBox's stock service is briefly inconsistent. Wait ~1.5 seconds and retry the same POST exactly once. If it fails again, treat it like the "genuinely gone" case above.
+   - If it's still listed as in-stock with `stockQuantity: 0` → distinguish phantom stock from a transient hiccup:
+     - **Phantom stock (packaged perishables).** A packaged perishable (bottled milk/water, fresh produce, packaged eggs) that POSTs with "out of stock, remaining amount: 0" while the menu shows `stockQuantity: 0` + `Instock` is phantom stock — that specific SKU isn't actually orderable, and retrying it won't help. Do **not** re-POST the same item. Substitute (a **kitchen-made item** of similar price is the safe choice — kitchen dishes don't phantom-fail), announce the swap, and POST the substitute. (Note: this is sporadic and item-specific — most packaged items POST fine; only swap the one that actually failed, don't preemptively drop every packaged item in the slot.)
+     - **Transient inconsistency.** A kitchen-made item failing with `stockQuantity: 0` is likely a brief stock-service hiccup. Wait ~1.5 seconds and retry the **same** POST exactly once. If it fails again, substitute as in the "genuinely gone" case above.
 3. After substitution + retry, if the second POST still fails with a stock error → surface to user. Don't try a third time silently.
 
 **Other common failure cases:**
@@ -660,9 +673,11 @@ Final summary:
 🎉 All done!
 
   Mon May 25 Lunch  $28.30 ✅ #XXXXXXX
-  Mon May 25 Dinner $20.25 ✅ #XXXXXXX
+  Mon May 25 Dinner $20.25 ✅            (no order number returned — placed OK)
   Tue May 26 Lunch  $29.50 ✅ #XXXXXXX
 ```
+
+The `#XXXXXXX` is shown only when the POST returned an `orderId`; a successful order without one still gets a ✅ (see Step 6 — `code: 1` is the success signal, not the presence of an id).
 
 ---
 

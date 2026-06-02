@@ -33,6 +33,8 @@ Returns `{ code: 1, data: { ... } }` containing:
 | `categoryList` | array | 27 categories |
 | `soldOutTag` | object | Sold-out info |
 
+**`stockQuantity` is not an "infinite if 0" flag.** `0` means WeBox isn't tracking that item's count — not that it's unconditionally orderable. Kitchen-prepared dishes with `stockQuantity: 0` order reliably. A minority of packaged perishables (specific SKUs of bottled milk/water, fresh produce, packaged eggs) with `stockQuantity: 0` + `stockStatus: "Instock"` are **phantom stock** — the menu lists them but `POST /api/orders` rejects with `"out of stock, remaining amount: 0"`. It's sporadic and item-specific (most packaged items order fine) and can't be predicted from the menu payload; the order skill substitutes the failing item (kitchen-made is the safe fallback) rather than retrying it (see `webox-order` Step 3 / Step 6).
+
 **Join for the slot you want:**
 ```javascript
 const j = await fetch(`/api/productSpecials/v8/address/${addrId}/date/${date}`, { credentials: 'include' }).then(r => r.json());
