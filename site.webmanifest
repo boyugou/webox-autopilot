@@ -4,8 +4,8 @@
   "description": "Claude Code skills for API-first WeBox meal ordering.",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#fbfcf9",
-  "theme_color": "#0f7b56",
+  "background_color": "#fff8ef",
+  "theme_color": "#e85d2a",
   "icons": [
     {
       "src": "assets/favicon.svg",

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" role="img" aria-label="webox-autopilot">
-  <rect width="180" height="180" rx="32" fill="#0f7b56"/>
+  <rect width="180" height="180" rx="32" fill="#e85d2a"/>
   <path d="M38 56h22l13 58 17-58h20l17 58 13-58h21l-24 88h-25L100 85l-19 59H57L38 56Z" fill="#ffffff"/>
-  <circle cx="140" cy="45" r="14" fill="#c7e86b"/>
+  <circle cx="140" cy="45" r="14" fill="#f6b547"/>
 </svg>
